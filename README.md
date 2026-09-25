@@ -310,6 +310,8 @@ In game:
 
 Two entries are offered only when the settings menu is opened from the ROM browser, not from a running game: the [recently played list](#recently-played-games) and [USB drive mode](#usb-drive-mode).
 
+**Overscan fix in menu** is meant for TVs that cut off the edges of the picture: **Rows** leaves the top and bottom text rows of the menus blank, **Rows & columns** also leaves the first and last columns blank. The effect is shown while the setting is changed, and it applies to the menus only, not to the game picture. The color palette is shown only while one of the two menu color entries is selected, which leaves room for more entries on one page. In the settings menu, press SELECT on any setting to jump straight to the SAVE/CANCEL/DEFAULT row. Changes are only applied when **SAVE** is selected.
+
 ***
 
 ## Recently played games
