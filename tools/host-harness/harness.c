@@ -707,6 +707,12 @@ int main(int argc, char **argv)
     uint32_t rtc_speed = getenv("RTC_SPEED") ? (uint32_t)atoi(getenv("RTC_SPEED")) : 1;
 #endif
 
+    /* PAD_UNTIL: stop the automated presses at this frame. The SPC7110 carts'
+     * check program re-enters MODE 1 if a button is held at reset, so a
+     * multi-stage run must go quiet before each RESET_AT. */
+    uint32_t pad_until = getenv("PAD_UNTIL") ? (uint32_t)strtoul(getenv("PAD_UNTIL"), NULL, 0)
+                                             : 0xffffffffu;
+
     uint32_t adbg_every = getenv("AUDIODBG") ? (uint32_t)atoi(getenv("AUDIODBG")) : 0;
 
     for (uint32_t frame = 0; frame <= maxframe; frame++) {
@@ -724,7 +730,7 @@ int main(int argc, char **argv)
             }
             S9xReset();
         }
-        if (pad_auto && frame >= pad_from) {
+        if (pad_auto && frame >= pad_from && frame <= pad_until) {
             /* SNES bit order (bit15..bit4): B Y Sel Sta Up Dn Lf Rt A X L R */
             uint32_t phase = (frame - pad_from) % pad_auto;
             harness_pad0 = (phase < pad_hold) ? pad_mask : 0;

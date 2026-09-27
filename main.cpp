@@ -167,6 +167,9 @@ uint16_t wiipad_raw_cached = 0;
 /* Frame counter for the rapid-fire A/B menu setting (port_glue.cpp gates
  * the A/B bits on bit 1, giving a 15 Hz autofire). */
 uint32_t g_rapid_fire_counter = 0;
+/* Raised when the in-game menu closes so the confirm press does not reach the
+ * game; cleared per port by S9xReadJoypad once the pad reads clear. */
+extern "C" volatile bool g_pad_ignore_request;
 /* ErrorMessage[] is owned by the framework (FrensHelpers.cpp); declared
  * extern in FrensHelpers.h. */
 
@@ -1263,6 +1266,9 @@ static void run_emulator(void)
             msu1_park();
 #endif
             int r = showSettingsMenu(true);
+            /* Whatever button confirmed the menu item is probably still down.
+             * Do not let the game see it -- see g_pad_ignore_request. */
+            g_pad_ignore_request = true;
             if (r == 3) {
 #if 0
                 if ((clock_get_hz(clk_sys) / 1000) > EMULATOR_CLOCKFREQ_KHZ)

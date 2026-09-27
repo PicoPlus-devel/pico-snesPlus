@@ -270,9 +270,25 @@ static uint32_t wiipad_to_snes(uint16_t v)
 }
 #endif
 
+/* Set by main.cpp when the in-game menu hands control back. The button the
+ * player used to confirm a menu item is normally still physically down, and
+ * without this the game sees it on its first frames. Harmless on most carts,
+ * not on the SPC7110 ones: their power-on check program reads A at startup as
+ * "run MODE 1 again", so an in-game Reset between diagnostic stages restarts
+ * the diagnostic instead of advancing, and Super Power League 4 can never be
+ * reached. Suppress each port until it reads clear -- per port, so a second
+ * controller that is not being held keeps working immediately. */
+extern "C" { volatile bool g_pad_ignore_request = false; }
+
 extern "C" uint32_t S9xReadJoypad(int32_t port)
 {
     if (port < 0 || port > 1) return 0;
+
+    static bool ignore[2] = { false, false };
+    if (g_pad_ignore_request) {
+        ignore[0] = ignore[1] = true;
+        g_pad_ignore_request = false;
+    }
 
     uint32_t out = pad_to_snes(io::getCurrentGamePadState(port));
 
@@ -295,6 +311,15 @@ extern "C" uint32_t S9xReadJoypad(int32_t port)
     if (port == (usb ? 1 : 0))
         out |= wiipad_to_snes(wiipad_raw_cached);
 #endif
+
+    /* Still holding whatever closed the menu: feed the game nothing until it
+     * is let go. Checked after every source is merged in, so a button held on
+     * the GPIO or Wii pad counts too. */
+    if (ignore[port])
+    {
+        if (out) return 0;
+        ignore[port] = false;
+    }
 
     /* Rapid fire on A/B (menu setting) — 15 presses/sec, same cadence as
      * the sibling emulators. */
