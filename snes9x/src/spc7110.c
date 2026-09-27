@@ -245,44 +245,33 @@ ContextState context[32];
  * because upstream duplicates it, which is exactly how the 2010 fork lost it. */
 static inline unsigned s7_datarom_size(void)
 {
-	/* Size of the data ROM, i.e. everything the chip addresses above the
-	 * directly-mapped 1 MB program area. Getting it too large is not a
-	 * cosmetic error: spc7110_decomp_dataread() wraps decomp_offset with
-	 * "while (offset >= size) offset -= size", so an oversized value stops a
-	 * stream wrapping where the cart expects and walks it into whatever
-	 * follows instead. On the expanded Tengai Makyou Zero that is a megabyte
-	 * of filler, mostly zeros -- assets stored late in the data ROM then
-	 * decompress to garbage. When the garbage is BRR sample data every voice
-	 * hits its END flag immediately (ENDX=0xff, all channels SOUND_SILENT)
-	 * while the driver carries on writing volumes: the music simply stops,
-	 * with the SPC700 still running and nothing else looking wrong.
+	/* Size of the data ROM: everything the chip addresses above the directly
+	 * mapped 1 MB program area. spc7110_decomp_dataread() wraps decomp_offset
+	 * with "while (offset >= size) offset -= size", so this value decides
+	 * where a stream folds back on itself. Too small and assets stored late
+	 * in the data ROM decompress from the wrong place -- on the expanded
+	 * English Tengai Makyou Zero that turns whole attract-mode backgrounds
+	 * into garbage tiles.
 	 *
-	 * Each cart states its own size. It writes 01 02 04 08 10 20 40 80 at
+	 * This is mainline snes9x's rule and it is correct for every cart tested:
+	 *
+	 *   Super Power League 4      2 MB image -> 0x100000
+	 *   Momotaro Dentetsu Happy   3 MB image -> 0x200000
+	 *   Tengai Makyou Zero (JP)   5 MB image -> 0x400000
+	 *   Tengai Makyou Zero (EN)   7 MB image -> 0x500000
+	 *
+	 * A cart states a size of its own -- it writes 01 02 04 08 10 20 40 80 at
 	 * data-ROM offset 0 and the complement at the last eight bytes, for the
-	 * address-bus check in its built-in diagnostic. Measured:
+	 * address-bus check in its built-in diagnostic -- and for both Tengai
+	 * images that marker sits at 0x4FFFF8, implying 0x400000. Do not trust it
+	 * on a patched image: the translation appended assets past the original
+	 * end without moving the marker, and honouring it corrupts them.
 	 *
-	 *   Momotaro Dentetsu Happy  end marker @ 0x2FFFF8 -> 0x200000
-	 *   Super Power League 4     end marker @ 0x1FFFF8 -> 0x100000
-	 *   Tengai Makyou Zero (EN)  end marker @ 0x4FFFF8 -> 0x400000
-	 *
-	 *   Tengai Makyou Zero (JP)  end marker @ 0x4FFFF8 -> 0x400000
-	 *
-	 * Mainline's rule matches all of these except the English patch, which it
-	 * overshoots by 1 MB. Note the two Tengai images agree on 0x400000 even
-	 * though one is 5 MB and the other 7 MB -- it is the same game with 2 MB
-	 * appended -- which is why the cap below is on the data ROM, not on the
-	 * image size, and why ROMSize is useless here (both declare 13). */
-	/* The chip addresses at most 1 MB of program plus 4 MB of data ROM, so
-	 * the data ROM is min(image, 5 MB) - 1 MB. Anything past 5 MB in the
-	 * image is not data ROM at all: on the English patch it is a megabyte of
-	 * filler followed by the megabyte mapped directly at $40-$4f.
-	 *
-	 * Do not key this off ROMSize: both Tengai Makyou Zero images declare 13
-	 * (8 MB) in the header while being 5 MB and 7 MB respectively. */
-	uint32_t size = Memory.CalculatedSize;
-	if (size > 0x500000)
-		size = 0x500000;
-	return size - 0x100000;
+	 * Do not key this off ROMSize either: both Tengai images declare 13 (8 MB)
+	 * while being 5 MB and 7 MB. */
+	return Memory.CalculatedSize > 0x500000
+	     ? Memory.CalculatedSize - 0x200000
+	     : Memory.CalculatedSize - 0x100000;
 }
 
 /* Pico port: the SPC7110's RTC-4513 gets its own 20 bytes. Upstream
