@@ -62,6 +62,8 @@ void AlphaROMMap(void);
 void SA1ROMMap(void);
 void BSHiROMMap(void);
 void SPC7110HiROMMap(void);
+void map_index(uint32_t bank_s, uint32_t bank_e, uint32_t addr_s,
+               uint32_t addr_e, intptr_t index, int32_t type);
 void ApplyROMFixes(void);
 void ApplyROMPatches(void);
 void DSPMap(void);

@@ -152,6 +152,12 @@ endif()
 # Testing aid: pretend the flash region never already holds the cart, so every
 # launch of an oversized ROM re-runs the erase/write and shows the progress bar.
 # Costs ~45 s per launch -- never ship this on.
+# The progress bar only ever draws between flash operations here (romflash.cpp
+# restores QMI M0 inside each erase/program), so it does not need to be SRAM
+# resident -- and on this board SRAM is what the render strips and GFX
+# LocalState compete for. Saves ~1.7 KB of arena.
+add_definitions(-DPROGRESS_BAR_IN_SRAM=0)
+
 option(ROMFLASH_FORCE_REWRITE "Always rewrite a flash-resident ROM (progress-bar testing)" OFF)
 if(ROMFLASH_FORCE_REWRITE)
     add_definitions(-DROMFLASH_FORCE_REWRITE=1)

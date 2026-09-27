@@ -737,7 +737,7 @@ static size_t snes_psram_working_set(void)
 /* Decimal conversion for the flash status line. snprintf lives in flash and
  * pulls in a lot of machinery; this is three lines and stays SRAM-resident
  * with the rest of that path. Returns the number of characters written. */
-static int __not_in_flash_func(snes_u32_to_dec)(char *out, uint32_t v)
+static int snes_u32_to_dec(char *out, uint32_t v)
 {
     char tmp[10];
     int  n = 0;
@@ -755,8 +755,7 @@ static int __not_in_flash_func(snes_u32_to_dec)(char *out, uint32_t v)
 #define PB_COL_EMPTY  0x7FFFu   /* white  */
 #define PB_COL_FILL   0x03E0u   /* green  */
 
-static void __not_in_flash_func(snes_romflash_progress)(int phase, uint32_t done,
-                                                        uint32_t total)
+static void snes_romflash_progress(int phase, uint32_t done, uint32_t total)
 {
     /* Erase is the long pole (~30 s of a ~45 s write), so give it most of the
      * bar: 0..60 for erase, 60..100 for the write. */
