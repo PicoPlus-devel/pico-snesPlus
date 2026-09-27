@@ -59,6 +59,11 @@ mask like `0x9080` (B+Start+A) from frame 0 puts every one of them into the
 diagnostic instead of the game. And `PAD_FROM` keeps the first frames
 untouched for the same reason.
 
+`PAD_UNTIL=<frame>` stops the automated presses again. This matters for any
+multi-stage run: `PAD_AUTO` would otherwise still be holding a button when
+`RESET_AT` fires, and the SPC7110 check program reads a button held at reset
+as a request to start its first stage over, so the run never advances.
+
 `RESET_AT=<frame>` issues a soft reset (`S9xReset`), the way you would press
 the console's reset button. `Memory.SRAM` survives it.
 
@@ -136,6 +141,36 @@ the device. `ring`, `urun`, `SD`/`rd` and `data` are all real.
 A synthetic pack makes the checks exact — a known sine can be compared
 sample-for-sample against `(src * volume) >> 8`, which catches ring-wrap and
 loop-splice errors that are inaudible in a real soundtrack.
+
+## Audio tracing (`AUDIODBG`, `DSPLOG`, `APUDUMP`)
+
+The harness mixes one video frame of audio per frame at the real-time rate,
+the way `core1_mix_task` does on the device, so sound faults reproduce here
+too — which is a great deal faster than reflashing a board to test a theory.
+
+`AUDIODBG=<n>` reports every `n` frames: mixed-sample count, the peak
+amplitude since the last report, the DSP's keyed/ENDX/FLG registers, how many
+key-ons the driver asked for and on which voices, how many times the 65816
+wrote an APU port, the SPC700's PC and output ports, the three timer counters,
+voice 0's eight DSP registers, and every voice's envelope state and level.
+
+    AUDIODBG=60 SRAM=game.SAV ./spc7110 game.sfc out tag 5400 99999
+
+A silent game with key-ons still being issued is a different fault from one
+where the driver has stopped asking; the `KON` column separates them. Timer
+counters that free-run instead of sitting at zero mean the driver has stopped
+reading them, i.e. it has left its main loop.
+
+`DSPLOG=<from>,<to>` traces every DSP register write in a frame window, with
+voice 0's state alongside, which shows what the driver actually intends for a
+voice (ADSR against GAIN, key-off, envelope mode).
+
+`APUDUMP=<frame>` hex-dumps four regions of SPC700 RAM at that frame, for
+disassembling a driver that has become stuck in a loop.
+
+Requires `-DAUDIO_WATCHDOG=1`, which `build.sh` passes for the `spc7110`
+variant. The same reporting exists on the device behind the `AUDIO_WATCHDOG`
+cmake option, which prints on three consecutive silent seconds.
 
 ## Inspecting output
 

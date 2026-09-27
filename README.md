@@ -29,7 +29,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes and per-board download links.
 
 Worth knowing before you start. SNES emulation is demanding for this class of hardware, so there are some real limitations:
 
-- **Most cartridge expansion chips are emulated, but not all.** DSP-1 to DSP-4, Super FX, C4, OBC1, SA-1, S-RTC and MSU-1 games run;  S-DD1, and SPC7110 games are refused at load time with a message. Super FX speed varies a lot per game. See [Expansion chips](#expansion-chips) for the full picture.
+- **Most cartridge expansion chips are emulated, but not all.** DSP-1 to DSP-4, Super FX, C4, OBC1, SA-1, S-RTC, SPC7110 and MSU-1 games run; S-DD1 games are refused at load time with a message. Super FX speed varies a lot per game. See [Expansion chips](#expansion-chips) for the full picture.
 - **Games generally run at full speed (60 fps).** Demanding Super FX titles are the main exception; see [Expansion chips](#expansion-chips).
 - **Frame skipping is still enabled by default.** Most games render every other frame; demanding Super FX titles render one frame in three. Turning it off in the settings menu renders every frame, which looks considerably smoother; many games still hold full speed, but some slow down — try it per game, and leave it on for the heaviest titles.
 - **Battery saves are persisted** In-game saves that a cartridge writes to its battery-backed SRAM are stored on the SD card under `/SAVES/SNES/`. The save is written when you quit the game to the ROM menu (Select + Start → Quit game), so **quit to the menu before powering off** to keep your progress — pulling power mid-game loses everything since the last quit. There is no separate save-state feature. Games that use password systems are unaffected.
@@ -50,15 +50,33 @@ Many SNES cartridges carry an extra chip that the console itself does not have. 
 | SA-1 | Emulated | Super Mario RPG, Kirby Super Star, Kirby's Dream Land 3 |
 | OBC1 | Emulated | Metal Combat: Falcon's Revenge |
 | S-RTC | Emulated | Dai Kaijuu Monogatari II |
+| SPC7110 (+ RTC-4513) | Emulated, **see below** | Far East of Eden Zero, Momotarou Dentetsu Happy, Super Power League 4 |
 
 These are **not** emulated. Such ROMs are detected at load time and refused with a message:
 
 | Chip | Example games |
 | --- | --- |
 | S-DD1 | Star Ocean, Street Fighter Alpha 2 |
-| SPC7110 | Far East of Eden Zero, Momotarou Dentetsu Happy |
 
 Two more chips, SETA (ST010/ST011) and BS-X, are also unimplemented but are not detected, so those carts load and then run without the chip rather than being refused. Expect them to misbehave.
+
+### SPC7110
+
+The SPC7110 is Hudson's compression and mapping chip, used by a small number of Japanese cartridges: Far East of Eden Zero (Tengai Makyou Zero), Momotarou Dentetsu Happy and Super Power League 4. The English fan translation of Far East of Eden Zero is supported as well. Far East of Eden Zero additionally carries an RTC-4513 real-time clock, which the game uses for its day and night cycle and for events tied to the date. It is emulated, subject to the limitation described below.
+
+**The cartridge tests itself before the game starts.** On the first start with an empty save these cartridges run their own built-in diagnostic, headed `SPC7110 CHECK PROGRAM`. It is part of the cartridge, not of the emulator, and it runs in two stages:
+
+1. Press **A** and wait for the test to report `ALL OK`, then reset the game (Select + Start → Reset game).
+2. Press **B** and wait for the second stage to report `ALL OK`, then reset again.
+3. The game starts. The result is kept in the battery save, so this is not asked again.
+
+Do not hold a button down while the game resets: the diagnostic reads a held button as a request to start over.
+
+**The clock cannot keep time while the board is off.** A real cartridge runs its clock from a battery. The RP2350 has no real-time clock, no battery to run one from, and no network to obtain the time from, so the cartridge clock advances only while a game is being played. Far East of Eden Zero therefore asks for the date and time on first play, exactly as the original cartridge did when its battery was new, and the value is stored alongside the battery save and resumed from there.
+
+The consequence is that the in-game calendar falls behind real time by however long the board has been switched off, and the game's date- and time-dependent content follows that drifting clock. The clock value is held in the battery save file together with the cartridge's own SRAM, so deleting that file presents the cartridge with an unset clock again — at the cost of the game progress and the diagnostic result stored in the same file.
+
+**Large cartridges are copied to the board's flash.** The English translation of Far East of Eden Zero is 7 MB and does not fit in the board's PSRAM alongside the emulator. A ROM that large is written into the board's own flash memory instead. The emulator asks for confirmation, then shows a progress bar while it writes; this takes a few minutes. Every later start of that game is immediate, as the copy is kept across power cycles. Only one such ROM is held at a time, so choosing a different oversized game writes it again. The Japanese original (5 MB) and the other two cartridges fit in PSRAM and are unaffected.
 
 ### MSU-1
 
@@ -361,7 +379,7 @@ Run `./bld.sh -h` for all options. The resulting `.uf2` file is placed in the `r
 
 ### Host-side render test harness
 
-The bundled snes9x core also compiles natively on Linux. [tools/host-harness](tools/host-harness) wraps it in a small test harness that boots a ROM through the same initialization sequence the RP2350 firmware uses and dumps rendered frames as PPM images — rendering bugs can be reproduced and bisected on a desktop machine without flashing a board. Three build variants (strip renderer vs. classic full-frame, device vs. upstream color math) let a byte-compare of the output pinpoint which layer a bug lives in. A fourth variant adds MSU-1 with a stdio backend, so a soundtrack pack can be played and the mixed audio dumped to a file without a board. See [tools/host-harness/README.md](tools/host-harness/README.md) for usage.
+The bundled snes9x core also compiles natively on Linux. [tools/host-harness](tools/host-harness) wraps it in a small test harness that boots a ROM through the same initialization sequence the RP2350 firmware uses and dumps rendered frames as PPM images — rendering bugs can be reproduced and bisected on a desktop machine without flashing a board. Three build variants (strip renderer vs. classic full-frame, device vs. upstream color math) let a byte-compare of the output pinpoint which layer a bug lives in. A fourth variant adds MSU-1 with a stdio backend, so a soundtrack pack can be played and the mixed audio dumped to a file without a board, and a fifth enables the SPC7110. The harness also mixes audio at the real-time rate and can report the DSP and SPC700 state frame by frame, so faults in sound as well as video can be traced on a desktop machine. See [tools/host-harness/README.md](tools/host-harness/README.md) for usage.
 
 ***
 
@@ -374,7 +392,7 @@ The bundled snes9x core also compiles natively on Linux. [tools/host-harness](to
 
 ## Use of AI
 
-The port of the Snes9x core to the RP2350, the coprocessor work (Super FX, DSP, SA-1, C4, OBC1, S-RTC), and the performance and stability tuning were developed with the help of [Anthropic Claude](https://www.anthropic.com/claude) (Opus 4.7, Opus 4.8 and Fable).
+The port of the Snes9x core to the RP2350, the coprocessor work (Super FX, DSP, SA-1, C4, OBC1, S-RTC, SPC7110), and the performance and stability tuning were developed with the help of [Anthropic Claude](https://www.anthropic.com/claude) (Opus 4.7, Opus 4.8 and Fable).
 
 ## License
 

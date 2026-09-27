@@ -1,6 +1,6 @@
 # CHANGELOG
 
-**v0.6** adds an **overscan fix** for the menus, for TVs that cut off the edges of the screen, and fits more options on one page of the settings menu.
+**v0.7** adds the **SPC7110** cartridges — Far East of Eden Zero, Momotarou Dentetsu Happy and Super Power League 4 — including the clock in the Far East of Eden Zero cartridge.
 
 # General Info
 
@@ -15,6 +15,45 @@
 > **The optional 504 MHz overclock in the settings menu is not advised. Leave it off.**
 >
 > It gains very little — the bottleneck is PSRAM bandwidth, not the CPU clock, so most games run at essentially the same speed as at the default 378 MHz. It raises the core voltage, makes the chip run considerably hotter, and can overheat, destabilise or permanently damage the RP2350 and the board it is on. It is off by default and exists for experimenting only. Enabling it is entirely at your own risk; the author accepts no responsibility for any damage.
+
+# v0.7
+
+## Far East of Eden Zero and the other SPC7110 games
+
+A few Japanese cartridges use Hudson's SPC7110 chip. They were refused at load time until now. They play:
+
+- **Far East of Eden Zero** (Tengai Makyou Zero) — the Japanese original and the English fan translation
+- **Momotarou Dentetsu Happy**
+- **Super Power League 4**
+
+Far East of Eden Zero also has a clock built into the cartridge, which the game uses for its day and night cycle and for events tied to the date. It is emulated, with one real limitation: the RP2350 has no clock of its own, so it can only keep time while you are actually playing — see below.
+
+### The first start takes some patience
+
+These cartridges test themselves before they let you play. That is the cartridge doing it, not the emulator. On the first start with an empty save you get a screen headed `SPC7110 CHECK PROGRAM`:
+
+1. Press **A** and wait for it to finish, then reset the game (Select + Start → Reset game).
+2. Press **B** and wait for it to finish, then reset again.
+3. The game starts, and it will not ask again.
+
+Do not keep a button held down while it resets, or the test starts over.
+
+### The clock only runs while you play
+
+A real cartridge keeps its clock running on a battery, year in, year out. The RP2350 has nothing to do that with: no clock of its own, no battery for one, and no network to ask. So the game asks you for the date and time the first time you play — just as the original cartridge did when its battery was new — and the clock then runs only while you are playing. It stands still while the board is off, and it is stored with your save so it picks up where it left off.
+
+In practice that means the in-game calendar drifts behind the real one, by however long the board has been switched off. Anything the game ties to the date or the time of day follows that drifting clock rather than the real time. The clock is kept in the same file as your save, so deleting that file gives the cartridge a blank clock again — along with losing your progress and the result of the test above.
+
+### Big games are copied to the board first
+
+The English translation of Far East of Eden Zero is 7 MB and does not fit in the board's memory. A game that large is copied into the board's own flash memory instead. You are asked first, and a progress bar shows how far along it is; it takes a few minutes. After that the game starts straight away every time. Only one game is kept there, so picking a different oversized game copies that one instead.
+
+## Fixes
+
+- **The music no longer stops in Far East of Eden Zero.** It used to fade away after a few minutes and never come back, in both versions.
+- **Corrupt graphics in the English translation** of Far East of Eden Zero, where backgrounds turned into coloured noise.
+- **Super Power League 4** kept restarting its self-test instead of starting the game.
+- **A button used in the menu no longer reaches the game.** Choosing an item in the in-game menu could pass that same button press straight through to the game.
 
 # v0.6
 
