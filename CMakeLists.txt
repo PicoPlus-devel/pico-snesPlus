@@ -158,6 +158,26 @@ endif()
 # LocalState compete for. Saves ~1.7 KB of arena.
 add_definitions(-DPROGRESS_BAR_IN_SRAM=0)
 
+# Diagnostic: stop advancing the SPC7110's RTC-4513, freezing the cart's clock
+# the way tools/host-harness does, so a fault can be A/B'd against the live
+# clock. The in-game date stops advancing while this is on.
+option(SPC7110_FREEZE_RTC "Do not tick the RTC-4513 (diagnostic)" OFF)
+if(SPC7110_FREEZE_RTC)
+    add_definitions(-DSPC7110_FREEZE_RTC=1)
+    message(WARNING "SPC7110_FREEZE_RTC=1 - the cart clock will not advance. Testing only.")
+endif()
+
+# Diagnostic: when the mixed output is silent for 3 seconds running, print the
+# DSP/SPC700 state that says why -- keyed/ENDX/FLG, KON and CPU->APU port
+# write counts, SPC PC, timers, and per-voice envelope and BRR chain length.
+# Costs a peak scan over each mixed block, so it is off unless you are chasing
+# an audio dropout. tools/host-harness has the same trace under AUDIODBG=.
+option(AUDIO_WATCHDOG "Report why audio went silent (diagnostic)" OFF)
+if(AUDIO_WATCHDOG)
+    add_definitions(-DAUDIO_WATCHDOG=1)
+    message(STATUS "AUDIO_WATCHDOG=1 - will report DSP state on a silent spell")
+endif()
+
 option(ROMFLASH_FORCE_REWRITE "Always rewrite a flash-resident ROM (progress-bar testing)" OFF)
 if(ROMFLASH_FORCE_REWRITE)
     add_definitions(-DROMFLASH_FORCE_REWRITE=1)

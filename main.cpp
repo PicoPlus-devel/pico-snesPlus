@@ -109,6 +109,11 @@ extern uint16_t *g_snes_private_screen;
 bool isFatalError = false;
 char *romName = nullptr;
 char selectedRom[FF_MAX_LFN] = {0};
+#if AUDIO_WATCHDOG
+/* Loudest sample core1 has mixed since core0 last looked. See
+ * audio_watchdog_tick(). */
+volatile uint32_t g_mix_peak = 0;
+#endif
 /* One-shot "resume this cart after the flash write" handshake across the
  * reboot romflash needs. See the loop entry in main(). */
 static constexpr int      SNES_RESUME_SCRATCH = 5;
@@ -359,6 +364,16 @@ static void __not_in_flash_func(core1_mix_task)(void)
         port_sound_lock();
         S9xMixSamples(mix_buf_c1, n * 2);
         port_sound_unlock();
+#if AUDIO_WATCHDOG
+        {
+            int pk = 0;
+            for (int i = 0; i < n * 2; i++) {
+                int v = mix_buf_c1[i] < 0 ? -mix_buf_c1[i] : mix_buf_c1[i];
+                if (v > pk) pk = v;
+            }
+            if ((uint32_t)pk > g_mix_peak) g_mix_peak = (uint32_t)pk;
+        }
+#endif
 #if ENABLE_MSU1
         /* MSU-1 PCM sums on top of the SNES DSP mix — before the VU meter so
          * the meter shows what actually leaves the box, and before both sink
@@ -733,6 +748,130 @@ static size_t snes_psram_working_set(void)
     n += 32u * 1024u;                     /* lwmem block overhead + slack */
     return n;
 }
+
+#if AUDIO_WATCHDOG
+/* Why-is-it-silent watchdog. core1 records the loudest sample it mixed; core0
+ * checks once a second. Three silent seconds in a row while audio is enabled
+ * means the DSP is being asked for sound and returning none -- which looks
+ * identical to a healthy system from the outside: 60 fps, no underruns, no
+ * resyncs, because the mixer is still feeding the queue, just with zeros.
+ * Dumps the state that distinguishes the causes, once per silent spell. */
+
+static void audio_watchdog_tick(void)
+{
+    static int  silent_secs = 0;
+    static bool reported    = false;
+
+    /* Deliberately NOT returning early when audio is disabled: "the setting
+     * got turned off" is itself a candidate explanation, and returning here
+     * would hide exactly that. It is reported below instead. */
+    if (g_mix_peak != 0) { silent_secs = 0; reported = false; g_mix_peak = 0; return; }
+    if (++silent_secs < 3 || reported) return;
+    reported = true;
+
+    printf("AUDIO SILENT %ds. audioEnabled=%d route=%s | so.mute=%d so.rate=%lu | "
+           "DSP FLG=%02x KON=%02x KOFF=%02x keyed=%02x "
+           "ENDX=%02x MVOL=%d/%d | SPC PC=%04x ports=%02x %02x %02x %02x\n",
+           silent_secs, (int)settings.flags.audioEnabled,
+           audio_route_to_ext() ? "ext" : "hdmi",
+           (int)so.mute_sound, (unsigned long)so.playback_rate,
+           APU.DSP[APU_FLG], APU.DSP[APU_KON], APU.DSP[APU_KOFF],
+           APU.KeyedChannels, APU.DSP[APU_ENDX],
+           (int8_t)APU.DSP[APU_MVOL_LEFT], (int8_t)APU.DSP[APU_MVOL_RIGHT],
+           (unsigned)(IAPU.PC - IAPU.RAM),
+           APU.OutPorts[0], APU.OutPorts[1], APU.OutPorts[2], APU.OutPorts[3]);
+    printf("  channels state/vol:");
+    for (int i = 0; i < 8; i++)
+        printf(" %d:%d/%d,%d", i, SoundData.channels[i].state,
+               SoundData.channels[i].volume_left,
+               SoundData.channels[i].volume_right);
+    printf("\n");
+
+    /* ENDX=ff with the driver still writing volumes means every voice hit the
+     * END flag of its BRR block immediately, which is what corrupt sample data
+     * looks like. Print the sample directory and the first BRR header each
+     * voice points at: header bit 0 is END, so 0x01/0x03 on every voice is
+     * garbage, while sane headers put the blame on DSP state instead. */
+    {
+        uint32_t dir = (uint32_t)APU.DSP[0x5d] << 8;
+            extern uint32_t g_apu_port_writes;
+        static uint32_t prev_port_writes = 0;
+        printf("  CPU->APU port writes since last report: %lu\n",
+               (unsigned long)(g_apu_port_writes - prev_port_writes));
+        prev_port_writes = g_apu_port_writes;
+        {
+            extern uint8_t  g_apu_port_log[16][2];
+            extern uint32_t g_apu_port_log_pos;
+            printf("  last CPU->APU writes (port=val):");
+            for (int i = 0; i < 16; i++) {
+                uint32_t k = (g_apu_port_log_pos + i) & 15;
+                printf(" %d=%02x", g_apu_port_log[k][0], g_apu_port_log[k][1]);
+            }
+            printf("\n  SPC sees $f4-$f7: %02x %02x %02x %02x\n",
+                   IAPU.RAM[0xf4], IAPU.RAM[0xf5], IAPU.RAM[0xf6], IAPU.RAM[0xf7]);
+            {
+                extern uint32_t g_apu_kon_writes, g_apu_kon_bits,
+                                g_apu_koff_writes, g_apu_dsp_writes;
+                static uint32_t pk, pf, pd;
+                printf("  DSP writes: %lu  KON(nonzero): %lu bits=%02x  KOFF: %lu\n",
+                       (unsigned long)(g_apu_dsp_writes - pd),
+                       (unsigned long)(g_apu_kon_writes - pk),
+                       (unsigned)g_apu_kon_bits,
+                       (unsigned long)(g_apu_koff_writes - pf));
+                pk = g_apu_kon_writes; pf = g_apu_koff_writes;
+                pd = g_apu_dsp_writes; g_apu_kon_bits = 0;
+            }
+            /* Timers clock the driver's sequencer; they are ticked off the
+             * scanline loop, so a frozen counter here means the SPC700 is not
+             * being executed rather than that the game went quiet. */
+            printf("  timers en=%d%d%d tgt=%03x/%03x/%03x cnt=%x/%x/%x\n",
+                   (int)APU.TimerEnabled[0], (int)APU.TimerEnabled[1],
+                   (int)APU.TimerEnabled[2],
+                   (unsigned)APU.TimerTarget[0], (unsigned)APU.TimerTarget[1],
+                   (unsigned)APU.TimerTarget[2],
+                   IAPU.RAM[0xfd], IAPU.RAM[0xfe], IAPU.RAM[0xff]);
+            /* FLG bit 5 going 1->0 lets the DSP write echo into APU RAM. If
+             * that region lands on the driver, the driver dies at a fixed time
+             * after the game enables echo -- which is the observed symptom.
+             * Checksums of the code area say whether APU RAM is being eaten. */
+            {
+                uint32_t esa = (uint32_t)APU.DSP[APU_ESA] << 8;
+                uint32_t edl = (uint32_t)(APU.DSP[APU_EDL] & 0x0f) * 2048;
+                uint32_t a, ck1 = 0, ck2 = 0;
+                for (a = 0x0200; a < 0x2000; a++) ck1 = (ck1 << 1 | ck1 >> 31) + IAPU.RAM[a];
+                for (a = 0xff00; a < 0xffc0; a++) ck2 = (ck2 << 1 | ck2 >> 31) + IAPU.RAM[a];
+                printf("  echo ESA=%04lx EDL=%x range=%04lx-%04lx EON=%02x | "
+                       "apuram ck %08lx/%08lx\n",
+                       (unsigned long)esa, APU.DSP[APU_EDL] & 0x0f,
+                       (unsigned long)esa, (unsigned long)(esa + (edl ? edl : 4)),
+                       APU.DSP[APU_EON],
+                       (unsigned long)ck1, (unsigned long)ck2);
+            }
+        }
+        /* Walk each voice's BRR chain to the END bit. A real instrument is
+         * tens to hundreds of 9-byte blocks; 1 or 2 means the sample data in
+         * APU RAM is truncated or garbage, which is exactly what "every
+         * key-on ends immediately" looks like from the mixer's side. */
+        printf("  DIR=%04x\n", (unsigned)dir);
+        for (int v = 0; v < 8; v++) {
+            uint32_t e    = (dir + ((uint32_t)APU.DSP[(v << 4) | 0x04] << 2)) & 0xffff;
+            uint32_t brr  = (IAPU.RAM[e] | (IAPU.RAM[(e + 1) & 0xffff] << 8)) & 0xffff;
+            uint32_t loop = (IAPU.RAM[(e + 2) & 0xffff] |
+                             (IAPU.RAM[(e + 3) & 0xffff] << 8)) & 0xffff;
+            uint32_t a = brr, n = 0;
+            uint8_t  h = IAPU.RAM[brr];
+            while (n < 1024) { n++; if (IAPU.RAM[a] & 1) break; a = (a + 9) & 0xffff; }
+            printf("    v%d src=%02x start=%04x loop=%04x hdr=%02x blocks=%lu end=%04x"
+                   " adsr=%02x%02x gain=%02x envx=%d pitch=%02x%02x\n",
+                   v, APU.DSP[(v << 4) | 0x04], (unsigned)brr, (unsigned)loop, h,
+                   (unsigned long)n, (unsigned)a,
+                   APU.DSP[(v << 4) | 0x05], APU.DSP[(v << 4) | 0x06],
+                   APU.DSP[(v << 4) | 0x07], SoundData.channels[v].envx,
+                   APU.DSP[(v << 4) | 0x03], APU.DSP[(v << 4) | 0x02]);
+        }
+    }
+}
+#endif
 
 /* Decimal conversion for the flash status line. snprintf lives in flash and
  * pulls in a lot of machinery; this is three lines and stays SRAM-resident
@@ -1258,7 +1397,7 @@ static void run_emulator(void)
             skipFrames--;
         }
 
-#if ENABLE_SPC7110
+#if ENABLE_SPC7110 && !SPC7110_FREEZE_RTC
         /* Advance the SPC7110's RTC-4513 on real elapsed time. Upstream
          * counts frames and assumes 60 of them per second; this port does not
          * reliably hit 60 and can be running frameskip, so a frame-counted
@@ -1373,6 +1512,9 @@ static void run_emulator(void)
             if (!audio_route_to_ext())
 #endif
             {
+#if AUDIO_WATCHDOG
+                audio_watchdog_tick();
+#endif
                 uint32_t ur = hstx_di_queue_get_underrun_count();
                 /* Only chatter when audio health is abnormal. minlvl is
                  * DI packets (4 samples each); watermark is 200. */

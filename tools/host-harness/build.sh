@@ -35,5 +35,5 @@ gcc -o "$HERE/msu1"      "$HERE/harness.c" $CORE $COMMON -DNO_ZERO_LUT -DRENDER_
 # which is the regression check that the ppu.c/dma.c/getset.c hooks are inert
 # for every cart without the chip.
 #   ./spc7110 "Tengai Makyou Zero (English v7.0).sfc" /tmp/out tmz 400 20
-gcc -o "$HERE/spc7110"   "$HERE/harness.c" $CORE $COMMON -DNO_ZERO_LUT -DRENDER_TO_FB=1 -DENABLE_SPC7110=1 -DSPC7110_STATS=1
+gcc -o "$HERE/spc7110"   "$HERE/harness.c" $CORE $COMMON -DNO_ZERO_LUT -DRENDER_TO_FB=1 -DENABLE_SPC7110=1 -DSPC7110_STATS=1 -DAUDIO_WATCHDOG=1
 echo "built: fb1_nolut fb0_nolut fb0_lut msu1 spc7110"

@@ -33,6 +33,7 @@
 #include "display.h"
 #include "cpuexec.h"
 #include "apu.h"
+#include "spc7110.h"
 #include "port_alloc.h"
 #if ENABLE_SPC7110
 #include "spc7110.h"
@@ -407,6 +408,93 @@ static void msu_mix_frame(void)
 #endif /* ENABLE_MSU1 */
 
 /* ---- main --------------------------------------------------------------- */
+/* Audio trace (AUDIODBG=<frames between reports>). Mixes one video frame's
+ * worth of samples per frame at the real-time rate, exactly the way
+ * core1_mix_task does on device, and reports the state that decides whether
+ * anything is audible. This is here to reproduce the Tengai "music fades to
+ * silence after a fixed time" fault off-hardware: the failure scales with how
+ * much mixing actually happens, so a harness that mixes at the right rate
+ * should show it too. */
+static int16_t adbg_buf[1600 * 2];
+static int      adbg_peak;
+static uint32_t adbg_mixed;
+
+static void adbg_frame(uint32_t frame, uint32_t every)
+{
+    const int n = 44100 / 60;
+#if AUDIO_WATCHDOG
+    {   /* DSPLOG=<from>,<to>: trace DSP writes across the stall. */
+        extern int g_dsp_log_on;
+        const char *d = getenv("DSPLOG");
+        if (d) {
+            uint32_t a = (uint32_t)strtoul(d, NULL, 0);
+            const char *c = strchr(d, ',');
+            uint32_t b = c ? (uint32_t)strtoul(c + 1, NULL, 0) : a;
+            g_dsp_log_on = (frame >= a && frame <= b);
+        }
+    }
+#endif
+    S9xMixSamples(adbg_buf, n * 2);
+    adbg_mixed += n;
+    for (int i = 0; i < n * 2; i++) {
+        int v = adbg_buf[i] < 0 ? -adbg_buf[i] : adbg_buf[i];
+        if (v > adbg_peak) adbg_peak = v;
+    }
+    if (frame % every) return;
+
+#if AUDIO_WATCHDOG
+    extern uint32_t g_apu_kon_writes, g_apu_kon_bits;
+    static uint32_t pk;
+    printf("f%-6u mixed=%-9lu peak=%-6d keyed=%02x ENDX=%02x FLG=%02x "
+           "KON(3s)=%-4lu bits=%02x |",
+           frame, (unsigned long)adbg_mixed, adbg_peak,
+           APU.KeyedChannels, APU.DSP[0x7c], APU.DSP[0x6c],
+           (unsigned long)(g_apu_kon_writes - pk), (unsigned)g_apu_kon_bits);
+    pk = g_apu_kon_writes; g_apu_kon_bits = 0;
+    {   /* Same fields the on-device watchdog prints, so a desktop run and a
+         * board run can be compared line for line. */
+        extern uint32_t g_apu_port_writes;
+        static uint32_t pw;
+        printf(" [pw=%-7lu SPC PC=%04x ports=%02x %02x %02x %02x tmr=%x/%x/%x]",
+               (unsigned long)(g_apu_port_writes - pw),
+               (unsigned)(IAPU.PC - IAPU.RAM),
+               APU.OutPorts[0], APU.OutPorts[1], APU.OutPorts[2], APU.OutPorts[3],
+               IAPU.RAM[0xfd], IAPU.RAM[0xfe], IAPU.RAM[0xff]);
+        pw = g_apu_port_writes;
+    }
+#else
+    printf("f%-6u mixed=%-9lu peak=%-6d keyed=%02x ENDX=%02x |",
+           frame, (unsigned long)adbg_mixed, adbg_peak,
+           APU.KeyedChannels, APU.DSP[0x7c]);
+#endif
+    printf(" v0regs:");
+    for (int r = 0; r < 8; r++) printf(" %02x", APU.DSP[r]);
+    printf(" |");
+    for (int v = 0; v < 8; v++)
+        printf(" %d:s%d/e%d", v, SoundData.channels[v].state,
+               SoundData.channels[v].envx);
+    printf("\n");
+
+    /* APUDUMP=<frame>: hex of the SPC700 code the driver is looping in, so the
+     * idle loop can be disassembled and its exit condition identified. */
+    {
+        const char *d = getenv("APUDUMP");
+        if (d && frame == (uint32_t)strtoul(d, NULL, 0)) {
+            static const uint32_t lo[] = { 0xff20, 0x2390, 0x1300, 0x0980 };
+            for (unsigned r = 0; r < sizeof lo / sizeof *lo; r++) {
+                for (uint32_t a = lo[r]; a < lo[r] + 0x40; a += 16) {
+                    printf("    %04x:", a);
+                    for (int i = 0; i < 16; i++) printf(" %02x", IAPU.RAM[a + i]);
+                    printf("\n");
+                }
+                printf("\n");
+            }
+        }
+    }
+    fflush(stdout);
+    adbg_peak = 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 5) {
@@ -608,7 +696,24 @@ int main(int argc, char **argv)
         }
     }
 
+#if ENABLE_SPC7110
+    /* Virtual clock for the RTC-4513, the way main.cpp feeds it time_us_64().
+     * Without this the cart's clock stands still, so everything it drives --
+     * on Tengai Makyou Zero that is day/night, and the music that changes with
+     * it -- never happens, and the harness silently exercises far less of the
+     * game than the device does. RTC_SPEED multiplies the rate so a full
+     * in-game day fits in a run instead of taking 24 hours. */
+    uint64_t s7_vclock_us = 0;
+    uint32_t rtc_speed = getenv("RTC_SPEED") ? (uint32_t)atoi(getenv("RTC_SPEED")) : 1;
+#endif
+
+    uint32_t adbg_every = getenv("AUDIODBG") ? (uint32_t)atoi(getenv("AUDIODBG")) : 0;
+
     for (uint32_t frame = 0; frame <= maxframe; frame++) {
+#if ENABLE_SPC7110
+        s7_vclock_us += (uint64_t)16667 * rtc_speed;
+        S9xSPC7110RTCTick(s7_vclock_us);
+#endif
         for (int ri = 0; ri < reset_n; ri++) {
             if (frame != reset_at[ri]) continue;
             if (getenv("RESET_WRAM")) {
@@ -646,6 +751,12 @@ int main(int argc, char **argv)
             msu_mix_frame();        /* core1's mixer */
         }
 #endif
+        if (adbg_every
+#if ENABLE_MSU1
+            && !msu_on          /* msu_mix_frame() already drained the mixer */
+#endif
+           )
+            adbg_frame(frame, adbg_every);
         if (frame >= dumpfrom && (frame - dumpfrom) % dumpstep == 0)
             dump_frame(outdir, tag, frame);
     }

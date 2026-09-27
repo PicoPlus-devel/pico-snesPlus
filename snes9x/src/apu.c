@@ -110,6 +110,22 @@ void S9xResetAPU()
    S9xSetEchoEnable(0);
 }
 
+#if AUDIO_WATCHDOG
+uint32_t g_apu_port_writes;
+/* Ring of the last few 65816 -> APU port writes, so a stuck handshake can be
+ * read off directly: which port, which value, and how it pairs with what the
+ * SPC700 is replying on APU.OutPorts / IAPU.RAM[0xf4..0xf7]. */
+uint8_t  g_apu_port_log[16][2];
+uint32_t g_apu_port_log_pos;
+/* Does the sound driver ever ask for a note? KON writes separate "the SPC700
+ * sequencer has stopped stepping" from "key-ons are being commanded and
+ * dropped on the way to the mixer". */
+uint32_t g_apu_kon_writes, g_apu_kon_bits, g_apu_koff_writes, g_apu_dsp_writes;
+/* Set by the harness for a frame window: trace every DSP write so the driver's
+ * intent for a voice (ADSR vs GAIN, key-off, envelope mode) can be read off. */
+int g_dsp_log_on;
+#endif
+
 uint8_t S9xAPUReadPort(int32_t Address)
 {
    IAPU.APUExecuting = Settings.APUEnabled;
@@ -142,6 +158,20 @@ uint8_t S9xAPUReadPort(int32_t Address)
 
 void S9xAPUWritePort(int32_t Address, uint8_t Byte)
 {
+#if AUDIO_WATCHDOG
+   /* Diagnostic: is the 65816 still talking to the sound driver at all?
+    * Distinguishes "the game stopped asking for music" from "the driver is
+    * being asked and not playing". */
+   {
+      extern uint32_t g_apu_port_writes, g_apu_port_log_pos;
+      extern uint8_t  g_apu_port_log[16][2];
+      uint32_t i = g_apu_port_log_pos & 15;
+      g_apu_port_writes++;
+      g_apu_port_log[i][0] = (uint8_t)(Address & 3);
+      g_apu_port_log[i][1] = Byte;
+      g_apu_port_log_pos++;
+   }
+#endif
    Memory.FillRAM [Address] = Byte;
    IAPU.RAM [(Address & 3) + 0xf4] = Byte;
    IAPU.APUExecuting = Settings.APUEnabled;
@@ -174,6 +204,16 @@ void S9xSetAPUDSP(uint8_t byte)
    static uint8_t KeyOn;
    static uint8_t KeyOnPrev;
    int32_t i;
+
+#if AUDIO_WATCHDOG
+   g_apu_dsp_writes++;
+   if (reg == APU_KON && byte) { g_apu_kon_writes++; g_apu_kon_bits |= byte; }
+   else if (reg == APU_KOFF && byte) g_apu_koff_writes++;
+   if (g_dsp_log_on && (reg < 0x08 || reg == APU_KON || reg == APU_KOFF ||
+                        reg == APU_FLG))
+      printf("      DSP[%02x] <- %02x   (v0 state=%d envx=%d)\n", reg, byte,
+             SoundData.channels[0].state, SoundData.channels[0].envx);
+#endif
 
    switch (reg)
    {

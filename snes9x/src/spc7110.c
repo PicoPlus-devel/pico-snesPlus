@@ -198,6 +198,7 @@
  * main.cpp keeps rejecting SPC7110 carts. */
 #if ENABLE_SPC7110
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -244,18 +245,44 @@ ContextState context[32];
  * because upstream duplicates it, which is exactly how the 2010 fork lost it. */
 static inline unsigned s7_datarom_size(void)
 {
-	/* Measured 2026-09-20 against the cart's own self-test pattern: Tengai
-	 * Makyou Zero puts 01 02 04 08 10 20 40 80 at data-ROM offset 0 and its
-	 * complement at the LAST eight bytes, ROM[0x4FFFF8] — so its data ROM is
-	 * 0x400000, and 0x500000-0x5FFFFF is filler that pushes the translation's
-	 * extra megabyte to 0x600000 ($40-$4f). Mainline's rule gives 0x500000
-	 * here, which is 1 MB too generous. Left as mainline for now: nothing the
-	 * game does yet wraps, so the two are indistinguishable (A/B'd, identical
-	 * output), and matching the reference implementation is the safer default
-	 * until a cart is found that tells them apart. */
-	return Memory.CalculatedSize > 0x500000
-	     ? Memory.CalculatedSize - 0x200000
-	     : Memory.CalculatedSize - 0x100000;
+	/* Size of the data ROM, i.e. everything the chip addresses above the
+	 * directly-mapped 1 MB program area. Getting it too large is not a
+	 * cosmetic error: spc7110_decomp_dataread() wraps decomp_offset with
+	 * "while (offset >= size) offset -= size", so an oversized value stops a
+	 * stream wrapping where the cart expects and walks it into whatever
+	 * follows instead. On the expanded Tengai Makyou Zero that is a megabyte
+	 * of filler, mostly zeros -- assets stored late in the data ROM then
+	 * decompress to garbage. When the garbage is BRR sample data every voice
+	 * hits its END flag immediately (ENDX=0xff, all channels SOUND_SILENT)
+	 * while the driver carries on writing volumes: the music simply stops,
+	 * with the SPC700 still running and nothing else looking wrong.
+	 *
+	 * Each cart states its own size. It writes 01 02 04 08 10 20 40 80 at
+	 * data-ROM offset 0 and the complement at the last eight bytes, for the
+	 * address-bus check in its built-in diagnostic. Measured:
+	 *
+	 *   Momotaro Dentetsu Happy  end marker @ 0x2FFFF8 -> 0x200000
+	 *   Super Power League 4     end marker @ 0x1FFFF8 -> 0x100000
+	 *   Tengai Makyou Zero (EN)  end marker @ 0x4FFFF8 -> 0x400000
+	 *
+	 *   Tengai Makyou Zero (JP)  end marker @ 0x4FFFF8 -> 0x400000
+	 *
+	 * Mainline's rule matches all of these except the English patch, which it
+	 * overshoots by 1 MB. Note the two Tengai images agree on 0x400000 even
+	 * though one is 5 MB and the other 7 MB -- it is the same game with 2 MB
+	 * appended -- which is why the cap below is on the data ROM, not on the
+	 * image size, and why ROMSize is useless here (both declare 13). */
+	/* The chip addresses at most 1 MB of program plus 4 MB of data ROM, so
+	 * the data ROM is min(image, 5 MB) - 1 MB. Anything past 5 MB in the
+	 * image is not data ROM at all: on the English patch it is a megabyte of
+	 * filler followed by the megabyte mapped directly at $40-$4f.
+	 *
+	 * Do not key this off ROMSize: both Tengai Makyou Zero images declare 13
+	 * (8 MB) in the header while being 5 MB and 7 MB respectively. */
+	uint32_t size = Memory.CalculatedSize;
+	if (size > 0x500000)
+		size = 0x500000;
+	return size - 0x100000;
 }
 
 /* Pico port: the SPC7110's RTC-4513 gets its own 20 bytes. Upstream
@@ -2222,7 +2249,12 @@ void SPC7110HiROMMap(void)
    s7_map_hirom(0x80, 0x8f, 0x8000, 0xffff, Memory.CalculatedSize, 0, false);
    s7_map_hirom(0xc0, 0xcf, 0x0000, 0xffff, Memory.CalculatedSize, 0, true);
 
-   if (Memory.ROMSize >= 13)
+   /* The expanded English patch puts a megabyte at ROM 0x600000 and expects
+    * it at $40-$4f. Gate on the image actually reaching that far, NOT on
+    * ROMSize: the stock 5 MB Japanese cart declares ROMSize 13 as well, so
+    * keying off the header mapped it 2 MB past the end of its ROM buffer and
+    * straight into whatever the PSRAM heap had next. */
+   if (Memory.CalculatedSize > 0x600000)
       s7_map_hirom(0x40, 0x4f, 0x0000, 0xffff, Memory.CalculatedSize, 0x600000, true);
 
    /* Through the chip. */
@@ -2271,14 +2303,30 @@ void S9xFreeSPC7110 (void)
  *
  * The buffer grows on demand and is never allocated for a cart without the
  * chip, so non-SPC7110 games pay one not-taken branch in S9xDoDMA. */
+/* One fixed allocation, never grown. A DMA transfer is at most 0x10000 bytes
+ * (dma.c normalises a zero TransferBytes to that and the field is 16-bit), so
+ * this size always suffices and the buffer can never fail to be big enough
+ * mid-game.
+ *
+ * It used to be grown on demand, which was wrong twice over. A failure to
+ * reallocate returns NULL from here, and dma.c has no slow path to fall back
+ * to -- it just copies whatever GetBasePointer gave it, which for the $4800
+ * port is a stale Memory.FillRAM byte repeated `count` times. Silently wrong
+ * data, arbitrarily far into a session. And the repeated free/alloc as the
+ * buffer grew churned a next-fit heap that this board already struggles to
+ * keep unfragmented.
+ *
+ * Allocated on first use rather than at init, so carts that never DMA out of
+ * the chip (Momotaro Dentetsu Happy and Super Power League 4 never do; Tengai
+ * Makyou Zero does it ~690 times a session) pay nothing. */
+#define SPC7110_DMA_BUF_BYTES 0x10000u
+
 static uint8_t *s7_dma_buf;
-static uint32_t s7_dma_cap;
 
 void spc7110_dma_free(void)
 {
 	port_alloc_free(s7_dma_buf);
 	s7_dma_buf = NULL;
-	s7_dma_cap = 0;
 }
 
 uint8_t *spc7110_dma_stage(uint8_t abank, uint16_t aaddress, uint32_t count,
@@ -2288,18 +2336,32 @@ uint8_t *spc7110_dma_stage(uint8_t abank, uint16_t aaddress, uint32_t count,
 
 	if (in_sa1_dma || count == 0 || !Settings.SPC7110)
 		return NULL;
-	/* $00-$3F/$80-$BF:4800 (the DCU port) and anywhere in bank $50. */
-	if (!(aaddress == 0x4800 || abank == 0x50))
+	/* $4800 is only the DCU port where the system area is mapped: banks
+	 * $00-$3F and $80-$BF. Matching it in every bank is wrong on any cart
+	 * that has ROM there -- both Tengai Makyou Zero images map $40-$4f as
+	 * ROM, so a DMA out of $4x:4800 was being hijacked and handed
+	 * decompressor output in place of the ROM bytes it asked for. When that
+	 * transfer carried sample data the result was BRR with the END bit set on
+	 * every block: ENDX=0xff, every voice SOUND_SILENT, the driver still
+	 * writing volumes, and the music simply gone. */
+	bool system_area = (abank <= 0x3f) || (abank >= 0x80 && abank <= 0xbf);
+	if (!((system_area && aaddress == 0x4800) || abank == 0x50))
 		return NULL;
 
-	if (s7_dma_cap < count)
-	{
-		port_alloc_free(s7_dma_buf);
-		s7_dma_buf = (uint8_t *)port_alloc_psram(count);
-		s7_dma_cap = s7_dma_buf ? count : 0u;
-	}
 	if (!s7_dma_buf)
+		s7_dma_buf = (uint8_t *)port_alloc_psram(SPC7110_DMA_BUF_BYTES);
+
+	if (!s7_dma_buf || count > SPC7110_DMA_BUF_BYTES) {
+		/* Loud, not silent: returning NULL here means dma.c transfers
+		 * garbage, so say so rather than let it look like a game bug. */
+		static bool moaned = false;
+		if (!moaned) {
+			moaned = true;
+			printf("spc7110: DMA staging unavailable (count %u) - "
+			       "transfer will be wrong\n", (unsigned)count);
+		}
 		return NULL;
+	}
 
 	for (i = 0; i < count; i++)
 		s7_dma_buf[i] = spc7110_decomp_read();
