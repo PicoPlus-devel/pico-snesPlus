@@ -31,7 +31,12 @@
 #include "ppu.h"
 #include "soundux.h"
 #include "display.h"
+#include "cpuexec.h"
+#include "apu.h"
 #include "port_alloc.h"
+#if ENABLE_SPC7110
+#include "spc7110.h"
+#endif
 
 /* ---- allocator: both tiers are plain malloc on the host -------------- */
 void *port_alloc_sram(size_t bytes)  { return malloc(bytes); }
@@ -135,7 +140,15 @@ void msu1_backend_close(void)
 #endif /* ENABLE_MSU1 */
 
 /* ---- input / peripheral stubs ---------------------------------------- */
-uint32_t S9xReadJoypad(int32_t port) { (void)port; return 0; }
+/* Scripted pad. S9xUpdateJoypads (ppu.c) refills IPPU.Joypads from here every
+ * frame, so this — not a direct write to IPPU.Joypads — is the hook.
+ *   PAD_AUTO=n   tap Start+A+B every n frames (PAD_HOLD frames, default 8)
+ * Enough to walk a title screen or a boot self-test that waits on a press. */
+uint32_t harness_pad0;
+uint32_t S9xReadJoypad(int32_t port)
+{
+    return port == 0 ? harness_pad0 : 0;
+}
 
 /* Scripted SNES Mouse (env MOUSE=1): circles the cursor around screen
  * center (so deltas keep flowing however long the run) and holds the left
@@ -471,6 +484,52 @@ int main(int argc, char **argv)
     if (mouse_enabled)
         IPPU.Controller = SNES_MOUSE;
 
+    /* Cart battery SRAM, the same shape as main.cpp's snes_load_sram: the
+     * real battery size is Memory.SRAMMask+1, and a shorter file is read as
+     * far as it goes. Loaded after S9xReset, which does not clear SRAM.
+     *
+     * This is not optional for SPC7110 carts. Hudson's built-in "SPC7110 CHECK
+     * PROGRAM" records its progress in cart SRAM: a blank battery gets stage 1
+     * ("PUSH A BUTTON"), then a reset gets stage 2 ("PUSH B BUTTON"), and only
+     * once both are recorded does the game boot. With SRAM starting at zero
+     * every run the harness can never reach the game.
+     *   SRAM=<file>      load this save before the first frame
+     *   SRAM_OUT=<file>  write SRAM back out when the run ends */
+    {
+        const char *sp = getenv("SRAM");
+        if (sp && Memory.SRAMSize) {
+            size_t sz = (size_t)Memory.SRAMMask + 1;
+            FILE *sf = fopen(sp, "rb");
+            if (sf) {
+                size_t n = fread(Memory.SRAM, 1, sz, sf);
+#if ENABLE_SPC7110
+                /* Same 32-byte RTC trailer main.cpp appends past the battery.
+                 * The cart's own MODE 2 diagnostic has an "RTC BACKUP" test
+                 * that checks the clock survived the power cycle, so without
+                 * this the harness reports NG where the device passes. */
+                if (Settings.SPC7110RTC) {
+                    uint8_t tr[32];
+                    if (fread(tr, 1, sizeof(tr), sf) == sizeof(tr) &&
+                        memcmp(tr, "S7RT", 4) == 0 && tr[4] == 1) {
+                        uint32_t sum = 0;
+                        for (int i = 0; i < 28; i++)
+                            sum = (sum << 1) + (sum >> 31) + tr[i];
+                        if (tr[28] == (uint8_t)sum && tr[29] == (uint8_t)(sum >> 8) &&
+                            tr[30] == (uint8_t)(sum >> 16) && tr[31] == (uint8_t)(sum >> 24)) {
+                            S9xSPC7110RTCImport(tr + 8);
+                            printf("SRAM: RTC-4513 restored from trailer\n");
+                        }
+                    }
+                }
+#endif
+                fclose(sf);
+                printf("SRAM: loaded %zu of %zu bytes from %s\n", n, sz, sp);
+            } else {
+                fprintf(stderr, "SRAM: cannot open %s\n", sp);
+            }
+        }
+    }
+
     if (!S9xInitDisplay()) { fprintf(stderr, "Display init failed\n"); return 1; }
     if (!S9xInitGFX())     { fprintf(stderr, "GFX init failed\n");     return 1; }
 
@@ -514,7 +573,57 @@ int main(int argc, char **argv)
     const char *tr = getenv("TRACE_FROM");
     uint32_t trace_from = tr ? (uint32_t)strtoul(tr, NULL, 0) : UINT32_MAX;
 
+    /* Scripted pad: PAD="600:start,900:a" holds a button for PAD_HOLD frames
+     * (default 8) starting at the given frame. Games that wait on a "press
+     * Start" prompt need this to get past their own front end. PAD_AUTO=n
+     * instead taps Start+A every n frames, which is enough to walk a boot
+     * self-test or a title screen without scripting each press. */
+    uint32_t pad_auto = getenv("PAD_AUTO") ? (uint32_t)atoi(getenv("PAD_AUTO")) : 0;
+    uint32_t pad_hold = getenv("PAD_HOLD") ? (uint32_t)atoi(getenv("PAD_HOLD")) : 8;
+    /* Nothing is pressed before PAD_FROM. This matters more than it looks:
+     * holding a button at power-on is how Hudson's SPC7110 carts enter their
+     * built-in "SPC7110 CHECK PROGRAM" diagnostic, which ends at "POWER OFF
+     * PLEASE" and never reaches the game. Tapping from frame 0 puts every
+     * SPC7110 cart into that screen. Default 240 = ~4 s of untouched boot. */
+    uint32_t pad_from = getenv("PAD_FROM") ? (uint32_t)atoi(getenv("PAD_FROM")) : 240;
+    /* Which buttons to tap. Default Start alone: pressing several at once is
+     * how these carts' diagnostic mode is invoked, so B+Start+A drops you
+     * into "SPC7110 CHECK PROGRAM" instead of past the title screen.
+     * Bit order (bit15..bit4): B Y Sel Sta Up Dn Lf Rt A X L R. */
+    uint32_t pad_mask = getenv("PAD_MASK")
+                      ? (uint32_t)strtoul(getenv("PAD_MASK"), NULL, 0) : 0x1000u;
+
+    /* RESET_AT=<frame> issues a soft reset, the way the user would hit the
+     * console's reset button. Memory.SRAM survives S9xReset, which is the
+     * point: Hudson's SPC7110 carts run their built-in "SPC7110 CHECK
+     * PROGRAM" on a cold boot with uninitialised cart SRAM and finish with
+     * "RESET THE SYSTEM." / "POWER OFF PLEASE". Without a reset (or a
+     * persistent .srm) the harness never reaches the game at all. */
+    uint32_t reset_at[8]; int reset_n = 0;
+    if (getenv("RESET_AT")) {
+        const char *q = getenv("RESET_AT");
+        while (*q && reset_n < 8) {
+            reset_at[reset_n++] = (uint32_t)strtoul(q, (char **)&q, 0);
+            while (*q == ',' || *q == ' ') q++;
+        }
+    }
+
     for (uint32_t frame = 0; frame <= maxframe; frame++) {
+        for (int ri = 0; ri < reset_n; ri++) {
+            if (frame != reset_at[ri]) continue;
+            if (getenv("RESET_WRAM")) {
+                memset(Memory.RAM, 0, RAM_SIZE);
+                fprintf(stderr, "harness: reset at frame %u (WRAM cleared)\n", frame);
+            } else {
+                fprintf(stderr, "harness: soft reset at frame %u (WRAM preserved)\n", frame);
+            }
+            S9xReset();
+        }
+        if (pad_auto && frame >= pad_from) {
+            /* SNES bit order (bit15..bit4): B Y Sel Sta Up Dn Lf Rt A X L R */
+            uint32_t phase = (frame - pad_from) % pad_auto;
+            harness_pad0 = (phase < pad_hold) ? pad_mask : 0;
+        }
         mouse_frame = frame;
         IPPU.RenderThisFrame = true;
         trace_blocks = (frame >= trace_from);
@@ -551,6 +660,59 @@ int main(int argc, char **argv)
         msu1_deinit();
     }
 #endif
+#if ENABLE_SPC7110 && SPC7110_STATS
+    if (Settings.SPC7110) {
+        printf("SPC7110: mmio r/w = %u/%u  window($d0-$ff) = %u  "
+               "FIFO bytes = %u\n",
+               spc7110_stats.mmio_reads, spc7110_stats.mmio_writes,
+               spc7110_stats.window_reads, spc7110_stats.fifo_reads);
+        printf("SPC7110: decomp_init = %u (mode0 %u, mode1 %u, mode2 %u)  "
+               "max seek index = %u\n",
+               spc7110_stats.decomp_inits, spc7110_stats.mode_inits[0],
+               spc7110_stats.mode_inits[1], spc7110_stats.mode_inits[2],
+               spc7110_stats.max_seek_index);
+        printf("SPC7110: register reads:");
+        for (int i = 0; i < 0x43; i++)
+            if (spc7110_stats.reg_reads[i])
+                printf(" %04x:%u", 0x4800 + i, spc7110_stats.reg_reads[i]);
+        printf("\n");
+        printf("SPC7110: register writes:");
+        for (int i = 0; i < 0x43; i++)
+            if (spc7110_stats.reg_writes[i])
+                printf(" %04x:%u", 0x4800 + i, spc7110_stats.reg_writes[i]);
+        printf("\n");
+    }
+#endif
+    {
+        const char *so = getenv("SRAM_OUT");
+        if (so && Memory.SRAMSize) {
+            size_t sz = (size_t)Memory.SRAMMask + 1;
+            FILE *sf = fopen(so, "wb");
+            if (sf) {
+                fwrite(Memory.SRAM, 1, sz, sf);
+#if ENABLE_SPC7110
+                if (Settings.SPC7110RTC) {
+                    uint8_t tr[32];
+                    memset(tr, 0, sizeof(tr));
+                    memcpy(tr, "S7RT", 4);
+                    tr[4] = 1;
+                    S9xSPC7110RTCExport(tr + 8);
+                    uint32_t sum = 0;
+                    for (int i = 0; i < 28; i++)
+                        sum = (sum << 1) + (sum >> 31) + tr[i];
+                    tr[28] = (uint8_t)sum;         tr[29] = (uint8_t)(sum >> 8);
+                    tr[30] = (uint8_t)(sum >> 16); tr[31] = (uint8_t)(sum >> 24);
+                    fwrite(tr, 1, sizeof(tr), sf);
+                    printf("SRAM: RTC-4513 trailer appended\n");
+                }
+#endif
+                fclose(sf);
+                printf("SRAM: wrote %zu bytes to %s\n", sz, so);
+            } else {
+                fprintf(stderr, "SRAM: cannot write %s\n", so);
+            }
+        }
+    }
     printf("done: %u frames\n", maxframe + 1);
     return 0;
 }

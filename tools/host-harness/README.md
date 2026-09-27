@@ -27,6 +27,7 @@ Needs only a native `gcc`. Produces four binaries in this directory:
 | `fb0_nolut` | classic full-frame render, device color math                   |
 | `fb0_lut`   | classic full-frame render, upstream ZERO-LUT color math        |
 | `msu1`      | device render flow + MSU-1 (`ENABLE_MSU1=1`), see below         |
+| `spc7110`   | device render flow + SPC7110 (`ENABLE_SPC7110=1`), see below    |
 
 Byte-comparing the PPM output between the first three isolates a bug's
 layer: `fb1` vs `fb0` differs → strip renderer; `fb0_nolut` vs `fb0_lut`
@@ -43,8 +44,23 @@ mkdir -p out
 ./fb1_nolut dkc.sfc out dkc 600 1 550    # dump every frame from 550 to 600
 ```
 
-Frames are written as `<outdir>/<tag>_f00560.ppm` (RGB888 P6). No input is
-fed to the joypads, so attract sequences and intros play by themselves.
+Frames are written as `<outdir>/<tag>_f00560.ppm` (RGB888 P6). By default no
+input is fed to the joypads, so attract sequences and intros play by
+themselves.
+
+`PAD_AUTO=<n>` taps port 1 every `n` frames, holding for `PAD_HOLD` frames
+(default 8), starting at `PAD_FROM` (default 240 — nothing is pressed before
+that) with the buttons in `PAD_MASK` (default `0x1000`, Start alone; bit order
+bit15..bit4 is B Y Sel Sta Up Dn Lf Rt A X L R).
+
+Two defaults there are deliberate. Holding several buttons at power-on is how
+Hudson's SPC7110 carts enter their built-in **SPC7110 CHECK PROGRAM**, so a
+mask like `0x9080` (B+Start+A) from frame 0 puts every one of them into the
+diagnostic instead of the game. And `PAD_FROM` keeps the first frames
+untouched for the same reason.
+
+`RESET_AT=<frame>` issues a soft reset (`S9xReset`), the way you would press
+the console's reset button. `Memory.SRAM` survives it.
 
 `TRACE_FROM=<frame>` in the environment logs, from that frame on, every
 strip-chunk row range (`fb1` only) and the PPU state per frame (BGMode,
@@ -142,3 +158,38 @@ framebuffer with the SNES image centered (default NTSC window starts at
 x=32, y=8); `fb0` dumps the native SNES resolution, which is 512 wide when
 the frame used hi-res mode 5/6 or interlace (even pixels correspond to the
 force-lores output).
+
+## SPC7110 (`spc7110`)
+
+Built with `ENABLE_SPC7110=1 SPC7110_STATS=1`, and deliberately the only
+variant that is — the other four must keep producing byte-identical PPMs for
+every cart, which is the regression check that the `ppu.c` / `dma.c` /
+`getset.c` hooks stay inert when the chip is absent:
+
+```bash
+tools/host-harness/build.sh
+mkdir -p out
+for r in zelda dkc smw; do
+    ./fb1_nolut $r.sfc out/a a 150 150
+    ./spc7110   $r.sfc out/b a 150 150
+    diff -rq out/a out/b      # must be silent
+done
+```
+
+On an SPC7110 cart the run ends with a tally of what the chip actually did:
+
+```bash
+PAD_AUTO=40 ./spc7110 "Tengai Makyou Zero (English v7.0).sfc" out tmz 600 100
+```
+
+```
+SPC7110: mmio r/w = 197021/607  window($d0-$ff) = 0  FIFO bytes = 65537
+SPC7110: decomp_init = 1 (mode0 0, mode1 0, mode2 1)  max seek index = 0
+SPC7110: register reads:  4800:65537 4809:65537 ...
+SPC7110: register writes: 4811:58 4820:6 4830:25 4840:26 4841:50 ...
+```
+
+`max seek index` is the one to watch for performance: `decomp_init` ends with
+`while (index--) decomp_read()`, so a single write to `$4806` can decode up to
+262140 bytes inside one emulated CPU store. `FIFO bytes` divided by the frame
+count is the steady-state decompression load the RP2350 has to absorb.

@@ -9,11 +9,12 @@ CORE="$SRC/apu.c $SRC/c4.c $SRC/c4emu.c $SRC/clip.c $SRC/cpu.c $SRC/cpuexec.c \
       $SRC/cpuops.c $SRC/dma.c $SRC/dsp.c $SRC/fxemu.c $SRC/fxinst.c \
       $SRC/getset.c $SRC/gfx.c $SRC/globals.c $SRC/memmap.c $SRC/msu1.c \
       $SRC/obc1.c $SRC/ppu.c $SRC/sa1.c $SRC/sa1cpu.c $SRC/soundux.c \
-      $SRC/spc700.c $SRC/srtc.c $SRC/tile.c"
+      $SRC/spc700.c $SRC/spc7110.c $SRC/srtc.c $SRC/tile.c"
 
 # Same core defines as snes9x/CMakeLists.txt; the -include flags supply
 # headers the pico toolchain pulls in transitively.
-COMMON="-O2 -g -fno-strict-aliasing -w -I$SRC -lm \
+COMMON="-O2 -g -fno-strict-aliasing -w -Werror=implicit-function-declaration \
+        -Werror=int-conversion -I$SRC -lm \
         -include stdint.h -include stddef.h \
         -DRIGHTSHIFT_IS_SAR -DFAST_LSB_WORD_ACCESS -DPICO_SNESPLUS_HSTX"
 
@@ -28,4 +29,11 @@ gcc -o "$HERE/fb0_lut"   "$HERE/harness.c" $CORE $COMMON -DRENDER_TO_FB=0
 #   MSU=1 AUDIO_OUT=/tmp/a.raw ./msu1 rom.sfc /tmp out 600
 #   aplay -f S16_LE -r 44100 -c 2 /tmp/a.raw
 gcc -o "$HERE/msu1"      "$HERE/harness.c" $CORE $COMMON -DNO_ZERO_LUT -DRENDER_TO_FB=1 -DENABLE_MSU1=1 -DMSU1_VERBOSE=1
-echo "built: fb1_nolut fb0_nolut fb0_lut msu1"
+# Device render flow + the SPC7110 (Tengai Makyou Zero, Momotarou Dentetsu
+# Happy, Super Power League 4). Deliberately the ONLY variant built with
+# ENABLE_SPC7110=1: the other four must keep producing byte-identical PPMs,
+# which is the regression check that the ppu.c/dma.c/getset.c hooks are inert
+# for every cart without the chip.
+#   ./spc7110 "Tengai Makyou Zero (English v7.0).sfc" /tmp/out tmz 400 20
+gcc -o "$HERE/spc7110"   "$HERE/harness.c" $CORE $COMMON -DNO_ZERO_LUT -DRENDER_TO_FB=1 -DENABLE_SPC7110=1 -DSPC7110_STATS=1
+echo "built: fb1_nolut fb0_nolut fb0_lut msu1 spc7110"

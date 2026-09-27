@@ -34,6 +34,8 @@
 
 #include "FrensHelpers.h"
 #include "FrensFonts.h"
+#include "romflash.h"
+#include "progress_bar.h"
 #include "settings.h"
 #include "menu.h"
 #include "menu_settings.h"
@@ -65,6 +67,13 @@ extern "C" {
  * the streaming half is split between core0 (msu1_pump — all SD I/O) and
  * core1 (msu1_mix — sums PCM into the DSP mix). See snes9x/src/msu1.h. */
 #include "msu1.h"
+#endif
+
+#if ENABLE_SPC7110
+/* SPC7110: Hudson's graphics decompressor + memory mapper, plus the
+ * RTC-4513 on ROMType $F9. Registers and mapping live in the core; this
+ * file supplies the RTC its clock and persists it. See snes9x/src/spc7110.h. */
+#include "spc7110.h"
 #endif
 
 #if RENDER_TO_FB
@@ -100,6 +109,10 @@ extern uint16_t *g_snes_private_screen;
 bool isFatalError = false;
 char *romName = nullptr;
 char selectedRom[FF_MAX_LFN] = {0};
+/* One-shot "resume this cart after the flash write" handshake across the
+ * reboot romflash needs. See the loop entry in main(). */
+static constexpr int      SNES_RESUME_SCRATCH = 5;
+static constexpr uint32_t SNES_RESUME_MAGIC   = 0x5E5F1A54u;
 
 /* Frames rendered in the last ~1 s window, updated by the per-second block in
  * run_emulator() and read by the on-screen FPS overlay. */
@@ -680,15 +693,114 @@ static bool snes9x_setup_settings(void)
     return true;
 }
 
-static bool snes9x_load_rom_from_psram(uintptr_t psram_ptr, size_t romsize)
+/* rom_ptr is either the framework's PSRAM copy or, for carts too big to
+ * preload, the image in XIP flash (romflash.h). read_only says which: an XIP
+ * pointer cannot take the in-place header fixups ApplyROMPatches() makes for a
+ * handful of named carts, and a write there would be silently dropped. */
+/* PSRAM the emulator still needs once the ROM is in place. Derived from the
+ * allocation sites rather than guessed, because getting it wrong is only
+ * discovered after the ROM has been committed -- a 7 MB cart leaves 1023 KB
+ * free, needs ~1.04 MB, and dies in S9xInitDisplay with "Display init failed".
+ *
+ * The first group is unconditional PSRAM (memmap.c S9xInitMemory, port_glue).
+ * The second is the SRAM-first allocations, which by the time the menu has run
+ * routinely spill to PSRAM anyway -- the render strips already do. Budgeting
+ * for the spill costs nothing but a slightly earlier switch to flash. */
+static size_t snes_psram_working_set(void)
 {
-    if (!psram_ptr || !romsize) return false;
+    size_t n = 0;
 
-    /* Hand the PSRAM buffer to snes9x. LoadROM(NULL) treats Memory.ROM as
+    n += RAM_SIZE;                        /* Memory.RAM            128 KB */
+    n += VRAM_SIZE;                       /* Memory.VRAM            64 KB */
+    n += SRAM_SIZE;                       /* Memory.SRAM           128 KB */
+    n += 256u * 9u * sizeof(uint16_t);    /* IPPU.ScreenColors     4.5 KB */
+    n += (size_t)MAX_2BIT_TILES * 128u;   /* IPPU.TileCache        512 KB */
+    n += (size_t)MAX_2BIT_TILES;          /* IPPU.TileCached         4 KB */
+    n += 0x2000u;                         /* bytes0x2000             8 KB */
+    n += (size_t)SNES_HEIGHT_EXTENDED * 128u; /* s9x_port_objonline 30 KB */
+    n += 120u * 1024u;                    /* soundux LocalState (file-static) */
+#if RENDER_TO_FB || FILLRAM_IN_PSRAM
+    n += FILLRAM_SIZE;                    /* FillRAM forced to PSRAM 32 KB */
+#endif
+#if ENABLE_MSU1
+    n += 68u * 1024u;                     /* MSU-1 ring + data window, if a pack exists */
+#endif
+
+    n += 64u * 1024u;                     /* IAPU.RAM          } SRAM-first, */
+    n += 26u * 1024u;                     /* render strips     } but spill   */
+    n += 20u * 1024u;                     /* Memory.Map+MapInfo} when the    */
+    n += 23u * 1024u;                     /* gfx LocalState    } arena fills */
+    n += 32u * 1024u;                     /* lwmem block overhead + slack */
+    return n;
+}
+
+/* Decimal conversion for the flash status line. snprintf lives in flash and
+ * pulls in a lot of machinery; this is three lines and stays SRAM-resident
+ * with the rest of that path. Returns the number of characters written. */
+static int __not_in_flash_func(snes_u32_to_dec)(char *out, uint32_t v)
+{
+    char tmp[10];
+    int  n = 0;
+    do { tmp[n++] = (char)('0' + (v % 10)); v /= 10; } while (v);
+    for (int i = 0; i < n; i++) out[i] = tmp[n - 1 - i];
+    return n;
+}
+
+#if HSTX
+/* Progress bar during a ROM-to-flash write. Must be SRAM-resident: core1 is
+ * still servicing scan-out while XIP is off, and progress_bar_draw() is
+ * __not_in_flash_func for the same reason. Colours are RGB555 literals so
+ * nothing is read from a palette in flash. */
+#define PB_COL_BORDER 0x0000u   /* black  */
+#define PB_COL_EMPTY  0x7FFFu   /* white  */
+#define PB_COL_FILL   0x03E0u   /* green  */
+
+static void __not_in_flash_func(snes_romflash_progress)(int phase, uint32_t done,
+                                                        uint32_t total)
+{
+    /* Erase is the long pole (~30 s of a ~45 s write), so give it most of the
+     * bar: 0..60 for erase, 60..100 for the write. */
+    uint32_t pct = total == 0 ? 0
+                 : (phase == SNES_ROMFLASH_ERASE)
+                     ? (uint32_t)((uint64_t)done * 60u / total)
+                     : 60u + (uint32_t)((uint64_t)done * 40u / total);
+
+    /* The write phase fires ~1792 times; only redraw when the bar moves. */
+    static uint32_t last = 0xFFFFFFFFu;
+    if (pct == last && done != total) return;
+    last = pct;
+
+    /* Phase plus KB, so the screen says something useful while the bar sits
+     * on the same percentage for a few seconds during a block erase. Built
+     * with no printf: this runs between bootrom flash calls and stays
+     * SRAM-only on principle. */
+    char st[32];
+    const char *what = (phase == SNES_ROMFLASH_ERASE) ? "Erasing " : "Writing ";
+    int n = 0;
+    while (what[n] && n < 12) { st[n] = what[n]; n++; }
+    uint32_t kb = done / 1024u, tkb = total / 1024u;
+    n += snes_u32_to_dec(st + n, kb);
+    st[n++] = '/';
+    n += snes_u32_to_dec(st + n, tkb);
+    st[n++] = ' '; st[n++] = 'K'; st[n++] = 'B'; st[n] = 0;
+    progress_bar_draw_status(st, PB_COL_EMPTY, PB_COL_BORDER);
+
+    progress_bar_draw(pct, 100, PB_COL_FILL, PB_COL_EMPTY, PB_COL_BORDER);
+}
+#else
+static void snes_romflash_progress(int, uint32_t, uint32_t) {}
+#endif
+
+static bool snes9x_load_rom(uintptr_t rom_ptr, size_t romsize, bool read_only)
+{
+    if (!rom_ptr || !romsize) return false;
+
+    /* Hand the buffer to snes9x. LoadROM(NULL) treats Memory.ROM as
      * already populated; AllocSize doubles as "file size" in that path. */
-    Memory.ROM           = (uint8_t *)psram_ptr;
+    Memory.ROM           = (uint8_t *)rom_ptr;
     Memory.ROM_AllocSize = romsize;
     Memory.ROM_Offset    = 0;
+    Memory.ROMReadOnly   = read_only;
 
     if (!LoadROM(NULL)) {
         snprintf(ErrorMessage, ERRORMESSAGESIZE, "Not a SNES ROM.");
@@ -697,14 +809,20 @@ static bool snes9x_load_rom_from_psram(uintptr_t psram_ptr, size_t romsize)
 
     /* Reject special-chip ROMs we don't emulate. Emulated and allowed through:
      * DSP-1/2/3/4 (dsp.c), SuperFX/GSU (fxinst.c/fxemu.c), C4 (c4.c/c4emu.c),
-     * OBC1 (obc1.c), S-RTC (srtc.c) and SA-1 (sa1.c/sa1cpu.c) -- so Super Mario
-     * Kart, Pilotwings, Star Fox, Yoshi's Island, Mega Man X2/X3, Metal Combat,
-     * Dai Kaijuu Monogatari II, Super Mario RPG and Kirby Super Star all load.
-     * The S-DD1/SPC7110 decompressors have no implementation here (declared-
-     * only), so those carts still bail out. Note: SETA (ST01x) and BS-X are
-     * equally unimplemented but cannot be tested for -- InitROM never sets
+     * OBC1 (obc1.c), S-RTC (srtc.c), SA-1 (sa1.c/sa1cpu.c) and -- with
+     * ENABLE_SPC7110 -- the SPC7110 and its RTC-4513 (spc7110.c), so Super
+     * Mario Kart, Pilotwings, Star Fox, Yoshi's Island, Mega Man X2/X3, Metal
+     * Combat, Dai Kaijuu Monogatari II, Super Mario RPG, Kirby Super Star and
+     * Tengai Makyou Zero all load. The S-DD1 decompressor still has no
+     * implementation here (declared-only), so Star Ocean and Tales of
+     * Phantasia bail out. Note: SETA (ST01x) and BS-X are equally
+     * unimplemented but cannot be tested for -- InitROM never sets
      * Settings.SETA/BS, so such carts slip through and run without the chip. */
-    if (Settings.SDD1 || Settings.SPC7110) {
+    if (Settings.SDD1
+#if !ENABLE_SPC7110
+        || Settings.SPC7110
+#endif
+       ) {
         snprintf(ErrorMessage, ERRORMESSAGESIZE,
                  "Special chip ROMs not supported.");
         return false;
@@ -788,10 +906,22 @@ static void fps_overlay_strip_hook(uint16_t *strip, int stride,
 /* -------------------------------------------------------------------------
  * Cartridge battery SRAM persistence. snes9x keeps the save in Memory.SRAM;
  * the real battery size is Memory.SRAMMask+1 when Memory.SRAMSize>0 (and there
- * is no battery when SRAMSize==0). S-RTC carts now load, but snes9x only writes
- * its RTC trailer past the battery in S9xSRTCPreSaveState, which this port never
- * calls (no save states) -- so there is still no trailer to persist, and the
- * in-game clock restarts each power cycle. Saves live in /SAVES/SNES/<rom>.SAV.
+ * is no battery when SRAMSize==0). Saves live in /SAVES/SNES/<rom>.SAV.
+ *
+ * SPC7110 carts (Tengai Makyou Zero) additionally carry an RTC-4513, and this
+ * board has no clock to seed it from. The chip therefore starts unset, which
+ * is what a dead cart battery looks like and makes the game run its own "set
+ * the date" prompt; what the player enters is kept in a 32-byte trailer
+ * appended after the battery region here. The trailer is written only when
+ * Settings.SPC7110RTC, so no other cart's .SAV changes size, and it is only
+ * read back when the file is exactly battery+trailer long and the magic and
+ * checksum both agree -- an .SAV from an older build (or from another
+ * emulator) simply has no trailer and the game prompts again. The clock does
+ * not advance while the board is off; without an RTC chip it cannot.
+ *
+ * snes9x's own S9xSRTCPreSaveState trailer (srtc.c, the Sharp S-RTC used by
+ * Dai Kaijuu Monogatari II) is a different chip and is still never called --
+ * that clock does still restart each power cycle.
  *
  * FIL (~550 B, embeds a 512 B sector window) and FILINFO (~276 B) are far too
  * large for the 3 KB core0 stack (PICO_STACK_SIZE) — allocate them in PSRAM via
@@ -806,6 +936,42 @@ static void snes_sram_path(char *out, size_t n)
     Frens::stripextensionfromfilename(base);
     snprintf(out, n, "%s/%s.SAV", SNES_SAVE_DIR, base);
 }
+
+#if ENABLE_SPC7110
+/* 32 bytes: magic, version, the 20 RTC registers, and a checksum over the
+ * lot. Fixed size and self-describing, so a truncated or corrupt trailer is
+ * rejected rather than injecting garbage BCD into the chip. */
+#define SNES_RTC_TRAILER_SIZE 32
+#define SNES_RTC_TRAILER_MAGIC "S7RT"
+
+static uint32_t snes_rtc_trailer_sum(const uint8_t *t)
+{
+    uint32_t sum = 0;
+    for (int i = 0; i < SNES_RTC_TRAILER_SIZE - 4; i++)
+        sum = (sum << 1) + (sum >> 31) + t[i];
+    return sum;
+}
+
+static void snes_rtc_trailer_build(uint8_t *t)
+{
+    memset(t, 0, SNES_RTC_TRAILER_SIZE);
+    memcpy(t, SNES_RTC_TRAILER_MAGIC, 4);
+    t[4] = 1;                                   /* version */
+    S9xSPC7110RTCExport(t + 8);                 /* 20 bytes */
+    uint32_t sum = snes_rtc_trailer_sum(t);
+    t[28] = (uint8_t)sum;         t[29] = (uint8_t)(sum >> 8);
+    t[30] = (uint8_t)(sum >> 16); t[31] = (uint8_t)(sum >> 24);
+}
+
+static bool snes_rtc_trailer_valid(const uint8_t *t)
+{
+    if (memcmp(t, SNES_RTC_TRAILER_MAGIC, 4) != 0) return false;
+    if (t[4] != 1) return false;
+    uint32_t sum = snes_rtc_trailer_sum(t);
+    return t[28] == (uint8_t)sum       && t[29] == (uint8_t)(sum >> 8)
+        && t[30] == (uint8_t)(sum >> 16) && t[31] == (uint8_t)(sum >> 24);
+}
+#endif /* ENABLE_SPC7110 */
 
 static void snes_load_sram(void)
 {
@@ -830,6 +996,22 @@ static void snes_load_sram(void)
             printf("SRAM: loaded %u bytes from %s\n", (unsigned)br, path);
         else
             printf("SRAM: read error %s\n", path);
+#if ENABLE_SPC7110
+        /* The RTC trailer sits immediately after the battery region. Anything
+         * shorter is a pre-trailer save and leaves the clock unset. */
+        if (Settings.SPC7110RTC && fno->fsize >= sz + SNES_RTC_TRAILER_SIZE) {
+            uint8_t trailer[SNES_RTC_TRAILER_SIZE];
+            UINT tr = 0;
+            if (f_lseek(file, sz) == FR_OK &&
+                f_read(file, trailer, sizeof(trailer), &tr) == FR_OK &&
+                tr == sizeof(trailer) && snes_rtc_trailer_valid(trailer)) {
+                S9xSPC7110RTCImport(trailer + 8);
+                printf("SRAM: RTC-4513 restored from %s\n", path);
+            } else {
+                printf("SRAM: RTC trailer rejected in %s\n", path);
+            }
+        }
+#endif
         f_close(file);
     } else {
         printf("SRAM: cannot open %s for read\n", path);
@@ -855,6 +1037,18 @@ static void snes_save_sram(void)
             printf("SRAM: saved %u bytes to %s\n", (unsigned)bw, path);
         else
             printf("SRAM: write error %s\n", path);
+#if ENABLE_SPC7110
+        if (Settings.SPC7110RTC) {
+            uint8_t trailer[SNES_RTC_TRAILER_SIZE];
+            UINT tw = 0;
+            snes_rtc_trailer_build(trailer);
+            if (f_write(file, trailer, sizeof(trailer), &tw) == FR_OK &&
+                tw == sizeof(trailer))
+                printf("SRAM: RTC-4513 trailer appended\n");
+            else
+                printf("SRAM: RTC trailer write error\n");
+        }
+#endif
         f_close(file);
     } else {
         printf("SRAM: cannot open %s for write\n", path);
@@ -953,6 +1147,14 @@ static void run_emulator(void)
                 return;
             }
             if (r == 5) {
+                /* Flush the battery save first. Memory.SRAM survives
+                 * S9xReset, so this is not needed for the reset itself — but
+                 * SPC7110 carts run a multi-stage power-on self-test whose
+                 * progress lives in cart SRAM, and the player is expected to
+                 * reset between stages. Without a flush here, pulling power
+                 * after a reset loses that progress and the cart starts the
+                 * diagnostic over. Cheap: one SD write per explicit reset. */
+                snes_save_sram();
                 /* Reset game. Do it while the mixer is still parked —
                  * S9xReset reinitializes the APU/DSP state core1 mixes
                  * from. playback_rate is untouched, so audio survives. */
@@ -1057,6 +1259,14 @@ static void run_emulator(void)
             skipFrames--;
         }
 
+#if ENABLE_SPC7110
+        /* Advance the SPC7110's RTC-4513 on real elapsed time. Upstream
+         * counts frames and assumes 60 of them per second; this port does not
+         * reliably hit 60 and can be running frameskip, so a frame-counted
+         * clock would run slow by however far behind the emulator is. A no-op
+         * for every cart without the chip. */
+        S9xSPC7110RTCTick(time_us_64());
+#endif
 #if ENABLE_MSU1
         /* Every MSU-1 SD access happens here — the deferred track open and
          * the ring refill (~2949 B/frame while a track plays). Placed at the
@@ -1261,7 +1471,36 @@ int main()
      * (watchdog_reboot in run_emulator) — it should feel like a snappy return
      * to the ROM menu, not a fresh power-on. A cold/power-on boot still shows
      * it (watchdog_caused_reboot() is false then). */
+    /* Resume after a ROM-to-flash write. Writing a 7 MB cart means holding
+     * interrupts off for a few hundred ms at a time, once per 64 KB erase --
+     * and on PIO USB boards the host controller cannot survive that: the
+     * gamepad stops producing valid reports ("Invalid DS4 report size 0") and
+     * does not come back. Rather than try to nurse the USB stack through it,
+     * reboot once the write is done -- USB, core1 and the QMI all come back
+     * clean -- and pick the cart straight back up here so the user still only
+     * chose it once. scratch[5] is free: [4] is clobbered by watchdog_reboot,
+     * [6]/[7] are the bootloader handshake (FrensHelpers.cpp). */
     bool showSplash = !watchdog_caused_reboot();
+    bool resumedFromFlashWrite = false;
+    if (watchdog_hw->scratch[SNES_RESUME_SCRATCH] == SNES_RESUME_MAGIC) {
+        watchdog_hw->scratch[SNES_RESUME_SCRATCH] = 0;
+        /* The path comes from the flash record, NOT from ROMINFOFILE. That
+         * file lives at the SD root and every Frens emulator writes it, so it
+         * routinely names another console's cart -- resuming from it once
+         * flashed a 384 KB NES ROM into the SNES region and then boot-looped.
+         * The record is written by the very write we are resuming from, so it
+         * is both SNES-specific and exactly right. */
+        const char *rec = snes_romflash_recorded_path();
+        if (rec && rec[0]) {
+            strncpy(selectedRom, rec, sizeof(selectedRom) - 1);
+            selectedRom[sizeof(selectedRom) - 1] = 0;
+            resumedFromFlashWrite = true;
+            showSplash = false;
+            printf("romflash: resuming %s after the flash write\n", selectedRom);
+        } else {
+            printf("romflash: resume asked for, but the record is invalid\n");
+        }
+    }
 
     while (true) {
         if (selectedRom[0] == 0) {
@@ -1296,11 +1535,116 @@ int main()
             f_close(fil);
         }
         Frens::f_free(fil);
-        if (!ROM_FILE_ADDR || !romsize) {
+        if (!romsize) {
             strcpy(ErrorMessage, "ROM load failed");
             selectedRom[0] = 0;
             continue;
         }
+
+        /* ROM_FILE_ADDR == 0 with a valid size means the framework did not
+         * preload the cart -- either it skipped it (file larger than
+         * availMem - 512 KB) or the allocation failed outright. The latter is
+         * routine for a 7 MB cart after a couple of games: lwmem allocates
+         * next-fit and GetAvailableMemory() reports total free bytes rather
+         * than the largest run, so the arena can report 8 MB free and still
+         * not hold 7 MB contiguously. Either way the cart runs from XIP flash
+         * instead, which is where it was headed anyway. */
+        uintptr_t rom_addr   = ROM_FILE_ADDR;
+        bool      rom_in_flash = false;
+
+        /* The framework preloads any ROM that fits PSRAM -- but merely fitting
+         * is not enough. snes9x still needs ~1.04 MB after the ROM for
+         * Memory.RAM/VRAM/SRAM, TileCache, FillRAM, the sound LocalState, the
+         * render strips and the sprite line buffer. Measured on the 7 MB
+         * Tengai Makyou Zero patch: the preload leaves exactly 1023 KB and the
+         * last allocation in S9xInitDisplay (s9x_port_objonline, ~30 KB) comes
+         * back NULL -- the session dies with "Display init failed" after the
+         * ROM has already been read off the card.
+         *
+         * So decide on the working set, not on the ROM alone: if too little
+         * PSRAM would be left, drop the preloaded copy and run the cart from
+         * XIP flash instead (romflash.h), which frees the whole 8 MB for the
+         * emulator. A 4 MB cart leaves ~4 MB and is untouched by this. */
+        if (rom_addr) {
+            uint freeAfterPreload = Frens::GetAvailableMemory();
+            size_t need = snes_psram_working_set();
+            if (freeAfterPreload < need) {
+                printf("romflash: %u KB PSRAM left after preloading %u KB, "
+                       "emulator needs %u KB - running this cart from flash\n",
+                       (unsigned)(freeAfterPreload / 1024),
+                       (unsigned)(romsize / 1024),
+                       (unsigned)(need / 1024));
+                Frens::f_free((void *)rom_addr);
+                ROM_FILE_ADDR = 0;
+                rom_addr      = 0;
+            }
+        }
+
+        if (!rom_addr) {
+            /* Drop anything the framework left in ErrorMessage. If the preload
+             * failed it will hold "Cannot allocate ... bytes in PSRAM", which
+             * is not an error here -- running this cart from flash is the plan.
+             * Left set, it surfaces on the menu later: most visibly when the
+             * user declines the write below and gets a PSRAM complaint about a
+             * cart the emulator never intended to keep in PSRAM. Anything
+             * genuinely wrong from here on sets its own message. */
+            ErrorMessage[0] = 0;
+
+            if (romsize > snes_romflash_capacity()) {
+                snprintf(ErrorMessage, ERRORMESSAGESIZE, "ROM too large");
+                selectedRom[0] = 0;
+                continue;
+            }
+
+            /* Write it if it is not already there. On the launch we rebooted
+             * into, skip the check entirely: the image was verified against
+             * the source moments ago and the record is that proof, so
+             * re-CRCing 7 MB would only cost time -- and under
+             * ROMFLASH_FORCE_REWRITE holds() always answers "no", which would
+             * otherwise rewrite, reboot, and land right back here: a boot
+             * loop, and a testing build that can never reach the game. */
+            if (!resumedFromFlashWrite && !snes_romflash_holds(selectedRom, romsize)) {
+                /* Ask first. This is a minute of the console being unusable
+                 * and a write to the board's flash, so it should never be a
+                 * surprise -- and the user may simply have picked the wrong
+                 * cart. No means straight back to the menu, nothing written. */
+                const char *shortName = Frens::GetfileNameFromFullPath(selectedRom);
+                char sizeLine[40];
+                snprintf(sizeLine, sizeof(sizeLine), "%u KB - takes about a minute",
+                         (unsigned)(romsize / 1024));
+                if (!menuConfirmPrompt("This cart is too big for RAM and",
+                                       "must be written to flash first.",
+                                       sizeLine)) {
+                    printf("romflash: user declined the write\n");
+                    selectedRom[0] = 0;
+                    continue;
+                }
+
+                /* Leave a notice on screen; the bar is drawn over it. */
+                menuNoticeScreen("Writing to flash memory", shortName,
+                                 "Do not power off.",
+                                 "The console restarts when done.");
+                progress_bar_draw(0, 100, PB_COL_FILL, PB_COL_EMPTY, PB_COL_BORDER);
+
+                if (!snes_romflash_program(selectedRom, romsize,
+                                           snes_romflash_progress)) {
+                    snprintf(ErrorMessage, ERRORMESSAGESIZE, "Flash write failed");
+                    selectedRom[0] = 0;
+                    continue;
+                }
+                /* Written and verified. Reboot to get a clean USB host back
+                 * (see SNES_RESUME_SCRATCH above) and resume this cart there;
+                 * the record then names it and it starts straight from XIP. */
+                printf("romflash: rebooting to restore USB, then resuming\n");
+                watchdog_hw->scratch[SNES_RESUME_SCRATCH] = SNES_RESUME_MAGIC;
+                watchdog_reboot(0, 0, 0);
+                while (true) tight_loop_contents();
+            }
+
+            rom_addr     = (uintptr_t)snes_romflash_image();
+            rom_in_flash = true;
+        }
+        resumedFromFlashWrite = false;
 
         ErrorMessage[0] = 0;
 
@@ -1324,7 +1668,7 @@ int main()
         S9xSetPlaybackRate(SNES_AUDIO_HZ);
         Frens::dumpHeapStats("after-Sound");
 
-        if (!snes9x_load_rom_from_psram(ROM_FILE_ADDR, romsize)) {
+        if (!snes9x_load_rom(rom_addr, romsize, rom_in_flash)) {
             S9xDeinitSound();
             S9xDeinitAPU();
             S9xDeinitMemory();

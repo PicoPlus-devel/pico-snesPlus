@@ -43,6 +43,29 @@ if(NOT PSRAM_CS_PIN OR PSRAM_CS_PIN EQUAL 0)
     message(FATAL_ERROR "pico-snesPlus requires PSRAM. Selected board has no PSRAM_CS_PIN.")
 endif()
 
+# --- Flash size --------------------------------------------------------------
+# The Fruit Jam carries 16 MB, but the tinyusb BSP board header shipped with
+# older SDKs declares 8 MB:
+#   lib/tinyusb/hw/bsp/rp2040/boards/adafruit_fruit_jam/adafruit_fruit_jam.h
+#     // pico_cmake_set_default PICO_FLASH_SIZE_BYTES = (8 * 1024 * 1024)
+#     #ifndef PICO_FLASH_SIZE_BYTES
+#     #define PICO_FLASH_SIZE_BYTES (8 * 1024 * 1024)
+# family_support.cmake pulls that header in, so it wins over the SDK's own
+# board header and both the generated pico_flash_region.ld and the C macro come
+# out at 8 MB. hardware_flash's flash_range_erase/_program assert
+# `flash_offs + count <= PICO_FLASH_SIZE_BYTES`, so every romflash.cpp write at
+# 0x10800000 hard-asserts on the first erase.
+#
+# Both the header guard and the SDK's cmake default only apply when the value
+# is unset, so setting it here wins in both places -- and stays correct (same
+# value) once the SDK is updated and the BSP header says 16 MB. Scoped to the
+# board so no smaller-flash config is affected.
+if(PICO_BOARD STREQUAL "adafruit_fruit_jam")
+    set(PICO_FLASH_SIZE_BYTES 0x1000000)
+    add_definitions(-DPICO_FLASH_SIZE_BYTES=0x1000000)
+    message(STATUS "PICO_FLASH_SIZE_BYTES forced to 16 MB (stale tinyusb BSP header declares 8 MB)")
+endif()
+
 add_definitions(-DNDEBUG)
 
 # HDMI data-island audio ring: 208 packets instead of the driver's 256
@@ -113,6 +136,34 @@ if(ENABLE_MSU1)
     message(STATUS "ENABLE_MSU1=1 — MSU-1 audio streaming (PSRAM ring, SD-backed)")
 endif()
 
+# SPC7110: Hudson's graphics decompressor and memory mapper, plus an RTC-4513
+# on ROMType $F9. Tengai Makyou Zero, Momotarou Dentetsu Happy, Super Power
+# League 4. The decompressor is byuu and neviksti's reverse-engineered one, by
+# way of the C port in libretro/snes9x2010 — entirely self-contained, so unlike
+# snes9x <= 1.51 there is no "decomp pack" file to put next to the ROM.
+# Costs ~6 KB of .rodata (the reverse-Morton tables the 2bpp/4bpp modes index
+# per output byte), ~0.5 KB of .bss, and a DMA staging buffer that is grown on
+# demand in PSRAM and only while a $4800 / bank-$50 transfer is in flight.
+# Nothing is allocated and no branch is taken unless an SPC7110 cart is loaded.
+# The board has no RTC, so the clock starts unset (the cart then runs its own
+# dead-battery prompt) and is carried in an .SAV trailer — see main.cpp.
+# Directory-scoped so it reaches the snes9x_core build (spc7110.c, memmap.c,
+# getset.c, ppu.c, dma.c, cpu.c).
+# Testing aid: pretend the flash region never already holds the cart, so every
+# launch of an oversized ROM re-runs the erase/write and shows the progress bar.
+# Costs ~45 s per launch -- never ship this on.
+option(ROMFLASH_FORCE_REWRITE "Always rewrite a flash-resident ROM (progress-bar testing)" OFF)
+if(ROMFLASH_FORCE_REWRITE)
+    add_definitions(-DROMFLASH_FORCE_REWRITE=1)
+    message(WARNING "ROMFLASH_FORCE_REWRITE=1 - every big-ROM launch rewrites flash (~45 s). Testing only.")
+endif()
+
+option(ENABLE_SPC7110 "SPC7110 decompressor + RTC-4513 (Tengai Makyou Zero)" ON)
+if(ENABLE_SPC7110)
+    add_definitions(-DENABLE_SPC7110=1)
+    message(STATUS "ENABLE_SPC7110=1 — SPC7110 decompressor + RTC-4513")
+endif()
+
 # The MSU1: health line is otherwise printed only when the card is
 # struggling (underruns, a slow read, or a draining ring), matching the
 # audio-health readout in run_emulator(). Turn this on to get it every
@@ -147,6 +198,7 @@ endif()
 add_executable(${projectname}
     main.cpp
     msu1_port.cpp
+    romflash.cpp
     splash.cpp
     DefaultSS555.c
 )

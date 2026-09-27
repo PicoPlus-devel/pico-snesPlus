@@ -7,6 +7,7 @@
 #include "dma.h"
 #include "apu.h"
 #include "sa1.h"
+#include "spc7110.h"
 #if ENABLE_MSU1
 #include "msu1.h"
 #endif
@@ -185,6 +186,10 @@ void S9xDoDMA(uint8_t Channel)
       static uint8_t* msu_stage;
       msu_stage = NULL;
 #endif
+#if ENABLE_SPC7110
+      static uint8_t* s7_stage;
+      s7_stage = NULL;
+#endif
       /* XXX: DMA is potentially broken here for cases where we DMA across
        * XXX: memmap boundries. A possible solution would be to re-call
        * XXX: GetBasePointer whenever we cross a boundry, and when
@@ -226,6 +231,17 @@ void S9xDoDMA(uint8_t Channel)
          msu_stage = msu1_dma_stage(d->ABank, d->AAddress, (uint32_t) count,
                                     in_sa1_dma);
 #endif
+#if ENABLE_SPC7110
+      /* Same problem, same fix: the SPC7110's decompression port ($4800) and
+       * bank $50 are fixed-address A-bus sources, but GetBasePointer maps
+       * $4800 to MAP_CPU -> Memory.FillRAM and bank $50 to NULL, which the
+       * `if (!base) base = Memory.ROM` above turns into ROM offset 0. Drain
+       * the FIFO into a staging buffer instead. No allocation and no call for
+       * a cart without the chip. */
+      if (Settings.SPC7110)
+         s7_stage = spc7110_dma_stage(d->ABank, d->AAddress, (uint32_t) count,
+                                      in_sa1_dma);
+#endif
 
       if (inc > 0)
          d->AAddress += count;
@@ -239,6 +255,14 @@ void S9xDoDMA(uint8_t Channel)
       if (msu_stage)
       {
          base = msu_stage;
+         p    = 0;
+         inc  = 1;
+      }
+#endif
+#if ENABLE_SPC7110
+      if (s7_stage)
+      {
+         base = s7_stage;
          p    = 0;
          inc  = 1;
       }

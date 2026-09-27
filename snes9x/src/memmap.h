@@ -62,7 +62,6 @@ void AlphaROMMap(void);
 void SA1ROMMap(void);
 void BSHiROMMap(void);
 void SPC7110HiROMMap(void);
-void SPC7110Sram(uint8_t);
 void ApplyROMFixes(void);
 void ApplyROMPatches(void);
 void DSPMap(void);
@@ -139,6 +138,11 @@ typedef struct
    uint8_t  ExtendedFormat;
    size_t   ROM_AllocSize; // size of *ROM content
    size_t   ROM_Offset;
+   /* Pico port: set when *ROM is the XIP flash image rather than a PSRAM copy
+    * (carts too big to preload, see romflash.h). Writes to XIP are silently
+    * dropped, so the in-place cart fixups in ApplyROMPatches() are skipped —
+    * none of the carts it patches is anywhere near that size. */
+   bool     ROMReadOnly;
 } CMemory;
 
 uint8_t S9xGetByte(uint32_t Address);

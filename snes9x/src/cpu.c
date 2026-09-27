@@ -9,6 +9,7 @@
 #include "dma.h"
 #include "srtc.h"
 #include "obc1.h"
+#include "spc7110.h"
 #include "fxemu.h"
 #include "sa1.h"
 #include "sa1.h"
@@ -72,6 +73,12 @@ static void CommonS9xReset()
 
    S9xResetCPU();
    S9xResetSRTC();
+#if ENABLE_SPC7110
+   /* s7_power() deliberately leaves the RTC registers alone, so the in-game
+    * Reset menu item does not wipe a clock the player has set. */
+   if (Settings.SPC7110)
+      S9xResetSPC7110();
+#endif
 
    S9xResetDMA();
    S9xResetAPU();
