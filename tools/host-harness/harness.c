@@ -44,6 +44,26 @@ void *port_alloc_sram(size_t bytes)  { return malloc(bytes); }
 void *port_alloc_psram(size_t bytes) { return malloc(bytes); }
 void  port_alloc_free(void *p)       { free(p); }
 
+/* ---- audio: mix the way the device does ------------------------------ */
+/* S9xMixSamples works in soundux.c's static MixBuffer/EchoBuffer, which hold
+ * SOUND_BUFFER_SIZE (1321) int32 slots. The device never asks for more than
+ * 64 stereo frames per call (core1_mix_task; 256 on the core0 pump). The
+ * harness used to mix a whole video frame at once -- 735 frames, 1470 slots --
+ * which ran off the end of both buffers into the echo FIR taps and the
+ * envelope rate tables: the echo then fed back to full scale (Zelda's title
+ * music pinned at +/-32767) and envelopes, which the SPC700 driver reads back
+ * through ENVX, went wrong too. Chunk it exactly like core1_mix_task. */
+#define HARNESS_MIX_CHUNK 64
+static void harness_mix(int16_t *buf, int frames)
+{
+    while (frames > 0) {
+        int n = frames > HARNESS_MIX_CHUNK ? HARNESS_MIX_CHUNK : frames;
+        S9xMixSamples(buf, n * 2);
+        buf    += n * 2;
+        frames -= n;
+    }
+}
+
 /* ---- MSU-1 backend: stdio stand-in for msu1_port.cpp's FatFs ---------- */
 #if ENABLE_MSU1
 #include <time.h>
@@ -392,7 +412,7 @@ static void msu_drive(uint32_t frame)
 static void msu_mix_frame(void)
 {
     const int frames = (int)((uint64_t)44100 * msu_frame_us / 1000000u);
-    S9xMixSamples(msu_mixbuf, frames * 2);
+    harness_mix(msu_mixbuf, frames);
     for (int i = 0; i < frames * 2; i++) {
         int v = msu_mixbuf[i] < 0 ? -msu_mixbuf[i] : msu_mixbuf[i];
         if (v > msu_peak_snes) msu_peak_snes = v;
@@ -418,6 +438,7 @@ static void msu_mix_frame(void)
 static int16_t adbg_buf[1600 * 2];
 static int      adbg_peak;
 static uint32_t adbg_mixed;
+static FILE    *adbg_audio_out;    /* AUDIO_OUT without MSU-1 */
 
 static void adbg_frame(uint32_t frame, uint32_t every)
 {
@@ -434,12 +455,14 @@ static void adbg_frame(uint32_t frame, uint32_t every)
         }
     }
 #endif
-    S9xMixSamples(adbg_buf, n * 2);
+    harness_mix(adbg_buf, n);
     adbg_mixed += n;
     for (int i = 0; i < n * 2; i++) {
         int v = adbg_buf[i] < 0 ? -adbg_buf[i] : adbg_buf[i];
         if (v > adbg_peak) adbg_peak = v;
     }
+    if (adbg_audio_out)
+        fwrite(adbg_buf, sizeof(int16_t), (size_t)n * 2, adbg_audio_out);
     if (frame % every) return;
 
 #if AUDIO_WATCHDOG
@@ -508,6 +531,7 @@ int main(int argc, char **argv)
             "       MSU_VOL=<0-255>    MSU-1 volume  (default 255)\n"
             "       MSU_REPEAT=<0|1>   MSU-1 repeat  (default 1)\n"
             "       AUDIO_OUT=<path>   dump the mixed 44.1 kHz s16 stereo stream\n"
+            "                          (needs MSU=<track> or AUDIODBG=<n>)\n"
             "       FPS=<10-60>        model a game running below 60 fps\n",
             argv[0]);
         return 2;
@@ -714,6 +738,16 @@ int main(int argc, char **argv)
                                              : 0xffffffffu;
 
     uint32_t adbg_every = getenv("AUDIODBG") ? (uint32_t)atoi(getenv("AUDIODBG")) : 0;
+    /* AUDIO_OUT on an ordinary run: dump the stream AUDIODBG mixes. (With
+     * MSU-1 active the MSU path owns AUDIO_OUT and the mix instead.) */
+    if (adbg_every && getenv("AUDIO_OUT")
+#if ENABLE_MSU1
+        && !msu_on
+#endif
+       ) {
+        adbg_audio_out = fopen(getenv("AUDIO_OUT"), "wb");
+        if (!adbg_audio_out) perror(getenv("AUDIO_OUT"));
+    }
 
     for (uint32_t frame = 0; frame <= maxframe; frame++) {
 #if ENABLE_SPC7110
@@ -831,5 +865,6 @@ int main(int argc, char **argv)
         }
     }
     printf("done: %u frames\n", maxframe + 1);
+    if (adbg_audio_out) fclose(adbg_audio_out);
     return 0;
 }

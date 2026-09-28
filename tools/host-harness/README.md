@@ -147,6 +147,11 @@ loop-splice errors that are inaudible in a real soundtrack.
 The harness mixes one video frame of audio per frame at the real-time rate,
 the way `core1_mix_task` does on the device, so sound faults reproduce here
 too — which is a great deal faster than reflashing a board to test a theory.
+Like the device it mixes in 64-frame chunks (`harness_mix`): `S9xMixSamples`
+works in `soundux.c` buffers of `SOUND_BUFFER_SIZE` (1321) slots, and before
+2026-09-28 the harness asked for a whole frame (1470 slots) in one call. That
+overran into the echo filter taps and envelope rate tables, so earlier harness
+audio (saturated echo, wrong ENVX) did not match the device.
 
 `AUDIODBG=<n>` reports every `n` frames: mixed-sample count, the peak
 amplitude since the last report, the DSP's keyed/ENDX/FLG registers, how many
@@ -160,6 +165,12 @@ A silent game with key-ons still being issued is a different fault from one
 where the driver has stopped asking; the `KON` column separates them. Timer
 counters that free-run instead of sitting at zero mean the driver has stopped
 reading them, i.e. it has left its main loop.
+
+`AUDIO_OUT=<path>` alongside `AUDIODBG` writes that same mixed stream to a
+file (44.1 kHz, s16, stereo), for listening:
+
+    AUDIODBG=60 AUDIO_OUT=/tmp/a.raw ./fb1_nolut game.sfc out tag 3600 99999
+    aplay -f S16_LE -r 44100 -c 2 /tmp/a.raw
 
 `DSPLOG=<from>,<to>` traces every DSP register write in a frame window, with
 voice 0's state alongside, which shows what the driver actually intends for a
