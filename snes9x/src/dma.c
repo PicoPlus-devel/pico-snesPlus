@@ -8,6 +8,7 @@
 #include "apu.h"
 #include "sa1.h"
 #include "spc7110.h"
+#include "sdd1.h"
 #if ENABLE_MSU1
 #include "msu1.h"
 #endif
@@ -186,9 +187,10 @@ void S9xDoDMA(uint8_t Channel)
       static uint8_t* msu_stage;
       msu_stage = NULL;
 #endif
-#if ENABLE_SPC7110
-      static uint8_t* s7_stage;
-      s7_stage = NULL;
+#if ENABLE_SPC7110 || ENABLE_SDD1
+      /* Shared by the SPC7110 and the S-DD1: a cart has at most one of them. */
+      static uint8_t* chip_stage;
+      chip_stage = NULL;
 #endif
       /* XXX: DMA is potentially broken here for cases where we DMA across
        * XXX: memmap boundries. A possible solution would be to re-call
@@ -239,8 +241,16 @@ void S9xDoDMA(uint8_t Channel)
        * the FIFO into a staging buffer instead. No allocation and no call for
        * a cart without the chip. */
       if (Settings.SPC7110)
-         s7_stage = spc7110_dma_stage(d->ABank, d->AAddress, (uint32_t) count,
-                                      in_sa1_dma);
+         chip_stage = spc7110_dma_stage(d->ABank, d->AAddress, (uint32_t) count,
+                                        in_sa1_dma);
+#endif
+#if ENABLE_SDD1
+      /* S-DD1: an armed channel's fixed-address read of banks $c0-$ff returns
+       * decompressed data, not the ROM bytes GetBasePointer points at.
+       * sdd1_dma_stage (sdd1.c, in flash) decompresses the whole transfer
+       * into PSRAM and returns NULL for everything else. */
+      if (Settings.SDD1)
+         chip_stage = sdd1_dma_stage(Channel, (uint32_t) count);
 #endif
 
       if (inc > 0)
@@ -259,10 +269,10 @@ void S9xDoDMA(uint8_t Channel)
          inc  = 1;
       }
 #endif
-#if ENABLE_SPC7110
-      if (s7_stage)
+#if ENABLE_SPC7110 || ENABLE_SDD1
+      if (chip_stage)
       {
-         base = s7_stage;
+         base = chip_stage;
          p    = 0;
          inc  = 1;
       }

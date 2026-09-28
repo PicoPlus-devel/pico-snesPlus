@@ -19,7 +19,7 @@ sync when `port_glue.cpp` changes.
 tools/host-harness/build.sh
 ```
 
-Needs only a native `gcc`. Produces four binaries in this directory:
+Needs only a native `gcc`. Produces six binaries in this directory:
 
 | binary      | meaning                                                        |
 | ----------- | -------------------------------------------------------------- |
@@ -28,6 +28,7 @@ Needs only a native `gcc`. Produces four binaries in this directory:
 | `fb0_lut`   | classic full-frame render, upstream ZERO-LUT color math        |
 | `msu1`      | device render flow + MSU-1 (`ENABLE_MSU1=1`), see below         |
 | `spc7110`   | device render flow + SPC7110 (`ENABLE_SPC7110=1`), see below    |
+| `sdd1`      | device render flow + S-DD1 (`ENABLE_SDD1=1`), see below         |
 
 Byte-comparing the PPM output between the first three isolates a bug's
 layer: `fb1` vs `fb0` differs → strip renderer; `fb0_nolut` vs `fb0_lut`
@@ -239,3 +240,42 @@ SPC7110: register writes: 4811:58 4820:6 4830:25 4840:26 4841:50 ...
 `while (index--) decomp_read()`, so a single write to `$4806` can decode up to
 262140 bytes inside one emulated CPU store. `FIFO bytes` divided by the frame
 count is the steady-state decompression load the RP2350 has to absorb.
+
+## S-DD1 (`sdd1`)
+
+Built with `ENABLE_SDD1=1 SDD1_STATS=1`, and like `spc7110` the only variant
+with its chip, so the others stay a byte-identical regression check for the
+`dma.c` / `ppu.c` / `cpu.c` hooks. Without the chip both games still boot, but
+every decompressed tile is garbage, which makes a quick A/B:
+
+```bash
+./fb1_nolut "Street Fighter Alpha 2 (USA).sfc" out/a sfa2 1100 1100   # stripes
+./sdd1      "Street Fighter Alpha 2 (USA).sfc" out/b sfa2 1100 1100   # Akuma in flames
+PAD_AUTO=40 PAD_FROM=600 PAD_MASK=0x1080 ./sdd1 "Street Fighter Alpha 2 (USA).sfc" out sfa2 8000 400
+PAD_AUTO=30 PAD_FROM=900 PAD_MASK=0x1080 ./sdd1 "Star Ocean (Japan).sfc" out so 10000 500
+```
+
+The first `PAD_AUTO` run reaches a Ryu vs M. Bison fight; the second plays
+through Star Ocean's opening. The run ends with a tally:
+
+```
+SDD1: decompressions = 2100 (bitplane type 0/1/2/3 = 37/0/2063/0)  bytes = 3285170  largest transfer = 32000
+SDD1: frames with decompression = 1483 of 8001  worst frame = 40192 bytes (frame 1669)  avg per busy frame = 2215
+SDD1: bank writes = 0  pages selected = 0x000f  armed-but-ignored DMAs = 0
+SDD1: bank register value bits seen: $4804=00 $4805=00 $4806=00 $4807=00
+SDD1: register reads:
+```
+
+`SDD1_TRACE=<from>,<to>` prints every decompression in that frame window
+(channel, A-bus source, ROM offset, length, first bytes), which shows exactly
+which ROM data a scene is built from; comparing two ROM versions this way
+showed the Star Ocean English patch leaves the opening's subtitle graphics
+untouched (Mesen shows the same Japanese subtitles there).
+
+`worst frame` is the one to watch for performance: the device decompresses a
+whole transfer synchronously inside the `$420B` write on core0. `pages
+selected` is a bitmask of the 1 MB ROM pages the game mapped into `$c0-$ff`;
+Star Ocean (6 MB) must show `0x003f`. Anything above bit 5 there means a bank
+register read back wrong: Star Ocean saves and restores `$4806`/`$4807` by
+reading them (thousands of reads per session), which is why `S9xGetCPU` answers
+S-DD1 register reads from FillRAM instead of open bus.

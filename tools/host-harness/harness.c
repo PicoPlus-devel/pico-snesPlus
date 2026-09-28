@@ -38,6 +38,9 @@
 #if ENABLE_SPC7110
 #include "spc7110.h"
 #endif
+#if ENABLE_SDD1
+#include "sdd1.h"
+#endif
 
 /* ---- allocator: both tiers are plain malloc on the host -------------- */
 void *port_alloc_sram(size_t bytes)  { return malloc(bytes); }
@@ -749,7 +752,26 @@ int main(int argc, char **argv)
         if (!adbg_audio_out) perror(getenv("AUDIO_OUT"));
     }
 
+#if ENABLE_SDD1 && SDD1_STATS
+    /* Per-frame decompression load: the device does all of it synchronously
+     * inside the $420B write on core0, so the worst frame is the budget. */
+    uint32_t sdd1_frame_max = 0, sdd1_frame_max_at = 0, sdd1_busy_frames = 0;
+#endif
+#if ENABLE_SDD1 && SDD1_STATS
+    uint32_t sdd1_tr_from = 0xffffffffu, sdd1_tr_to = 0;
+    if (getenv("SDD1_TRACE")) {
+        const char *t = getenv("SDD1_TRACE"), *c = strchr(t, ',');
+        sdd1_tr_from = (uint32_t)strtoul(t, NULL, 0);
+        sdd1_tr_to   = c ? (uint32_t)strtoul(c + 1, NULL, 0) : sdd1_tr_from;
+    }
+#endif
     for (uint32_t frame = 0; frame <= maxframe; frame++) {
+#if ENABLE_SDD1 && SDD1_STATS
+        uint32_t sdd1_bytes_before = sdd1_stats.bytes;
+        sdd1_trace = (frame >= sdd1_tr_from && frame <= sdd1_tr_to);
+        if (sdd1_trace && sdd1_stats.bytes == sdd1_bytes_before)
+            printf("frame %u\n", frame);
+#endif
 #if ENABLE_SPC7110
         s7_vclock_us += (uint64_t)16667 * rtc_speed;
         S9xSPC7110RTCTick(s7_vclock_us);
@@ -774,6 +796,13 @@ int main(int argc, char **argv)
         trace_blocks = (frame >= trace_from);
         if (trace_blocks) fprintf(stderr, "frame %u:\n", frame);
         S9xMainLoop();
+#if ENABLE_SDD1 && SDD1_STATS
+        {
+            uint32_t b = sdd1_stats.bytes - sdd1_bytes_before;
+            if (b) sdd1_busy_frames++;
+            if (b > sdd1_frame_max) { sdd1_frame_max = b; sdd1_frame_max_at = frame; }
+        }
+#endif
         if (frame >= trace_from)
             fprintf(stderr,
                 "  regs: BGMode=%d 2133=%02x 2130=%02x 2131=%02x "
@@ -809,6 +838,31 @@ int main(int argc, char **argv)
                                               : "no MSU contribution — check the pack");
         if (msu_audio_out) fclose(msu_audio_out);
         msu1_deinit();
+    }
+#endif
+#if ENABLE_SDD1 && SDD1_STATS
+    if (Settings.SDD1) {
+        printf("SDD1: decompressions = %u (bitplane type 0/1/2/3 = %u/%u/%u/%u)  "
+               "bytes = %u  largest transfer = %u\n",
+               sdd1_stats.stages, sdd1_stats.mode_count[0], sdd1_stats.mode_count[1],
+               sdd1_stats.mode_count[2], sdd1_stats.mode_count[3],
+               sdd1_stats.bytes, sdd1_stats.max_transfer);
+        printf("SDD1: frames with decompression = %u of %u  worst frame = %u bytes "
+               "(frame %u)  avg per busy frame = %u\n",
+               sdd1_busy_frames, maxframe + 1, sdd1_frame_max, sdd1_frame_max_at,
+               sdd1_busy_frames ? sdd1_stats.bytes / sdd1_busy_frames : 0);
+        printf("SDD1: bank writes = %u  pages selected = 0x%04x  "
+               "armed-but-ignored DMAs = %u\n",
+               sdd1_stats.bank_writes, sdd1_stats.pages_seen,
+               sdd1_stats.ignored_armed);
+        printf("SDD1: bank register value bits seen: $4804=%02x $4805=%02x $4806=%02x $4807=%02x\n",
+               sdd1_stats.bank_or[0], sdd1_stats.bank_or[1],
+               sdd1_stats.bank_or[2], sdd1_stats.bank_or[3]);
+        printf("SDD1: register reads:");
+        for (int i = 0; i < 8; i++)
+            if (sdd1_stats.reg_reads[i])
+                printf(" %04x:%u", 0x4800 + i, sdd1_stats.reg_reads[i]);
+        printf("\n");
     }
 #endif
 #if ENABLE_SPC7110 && SPC7110_STATS

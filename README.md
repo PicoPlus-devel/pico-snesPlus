@@ -29,7 +29,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes and per-board download links.
 
 Worth knowing before you start. SNES emulation is demanding for this class of hardware, so there are some real limitations:
 
-- **Most cartridge expansion chips are emulated, but not all.** DSP-1 to DSP-4, Super FX, C4, OBC1, SA-1, S-RTC, SPC7110 and MSU-1 games run; S-DD1 games are refused at load time with a message. Super FX speed varies a lot per game. See [Expansion chips](#expansion-chips) for the full picture.
+- **Most cartridge expansion chips are emulated, but not all.** DSP-1 to DSP-4, Super FX, C4, OBC1, SA-1, S-RTC, S-DD1, SPC7110 and MSU-1 games run; SETA and BS-X games do not. Super FX speed varies a lot per game. See [Expansion chips](#expansion-chips) for the full picture.
 - **Games generally run at full speed (60 fps).** Demanding Super FX titles are the main exception; see [Expansion chips](#expansion-chips).
 - **Frame skipping is still enabled by default.** Most games render every other frame; demanding Super FX titles render one frame in three. Turning it off in the settings menu renders every frame, which looks considerably smoother; many games still hold full speed, but some slow down — try it per game, and leave it on for the heaviest titles.
 - **Battery saves are persisted** In-game saves that a cartridge writes to its battery-backed SRAM are stored on the SD card under `/SAVES/SNES/`. The save is written when you quit the game to the ROM menu (Select + Start → Quit game), so **quit to the menu before powering off** to keep your progress — pulling power mid-game loses everything since the last quit. There is no separate save-state feature. Games that use password systems are unaffected.
@@ -50,15 +50,10 @@ Many SNES cartridges carry an extra chip that the console itself does not have. 
 | SA-1 | Emulated | Super Mario RPG, Kirby Super Star, Kirby's Dream Land 3 |
 | OBC1 | Emulated | Metal Combat: Falcon's Revenge |
 | S-RTC | Emulated | Dai Kaijuu Monogatari II |
+| S-DD1 | Emulated | Street Fighter Alpha 2, Star Ocean |
 | SPC7110 (+ RTC-4513) | Emulated, **see below** | Far East of Eden Zero, Momotarou Dentetsu Happy, Super Power League 4 |
 
-These are **not** emulated. Such ROMs are detected at load time and refused with a message:
-
-| Chip | Example games |
-| --- | --- |
-| S-DD1 | Star Ocean, Street Fighter Alpha 2 |
-
-Two more chips, SETA (ST010/ST011) and BS-X, are also unimplemented but are not detected, so those carts load and then run without the chip rather than being refused. Expect them to misbehave.
+Two chips, SETA (ST010/ST011) and BS-X, are not emulated. They are also not detected, so those carts load and then run without the chip rather than being refused. Expect them to misbehave.
 
 ### SPC7110
 

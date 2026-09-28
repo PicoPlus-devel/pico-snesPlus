@@ -76,6 +76,13 @@ extern "C" {
 #include "spc7110.h"
 #endif
 
+#if ENABLE_SDD1
+/* S-DD1: decompressor + 1 MB bank mapper (Street Fighter Alpha 2, Star
+ * Ocean). Wired entirely inside the core; main.cpp only frees its PSRAM
+ * staging block when the session ends. See snes9x/src/sdd1.h. */
+#include "sdd1.h"
+#endif
+
 #if RENDER_TO_FB
 /* port glue — strip renderer. Re-anchors the framebuffer window for the
  * current PPU.ScreenHeight (the overscan bit flips 224<->239 at runtime)
@@ -950,16 +957,19 @@ static bool snes9x_load_rom(uintptr_t rom_ptr, size_t romsize, bool read_only)
 
     /* Reject special-chip ROMs we don't emulate. Emulated and allowed through:
      * DSP-1/2/3/4 (dsp.c), SuperFX/GSU (fxinst.c/fxemu.c), C4 (c4.c/c4emu.c),
-     * OBC1 (obc1.c), S-RTC (srtc.c), SA-1 (sa1.c/sa1cpu.c) and -- with
-     * ENABLE_SPC7110 -- the SPC7110 and its RTC-4513 (spc7110.c), so Super
-     * Mario Kart, Pilotwings, Star Fox, Yoshi's Island, Mega Man X2/X3, Metal
-     * Combat, Dai Kaijuu Monogatari II, Super Mario RPG, Kirby Super Star and
-     * Tengai Makyou Zero all load. The S-DD1 decompressor still has no
-     * implementation here (declared-only), so Star Ocean and Tales of
-     * Phantasia bail out. Note: SETA (ST01x) and BS-X are equally
-     * unimplemented but cannot be tested for -- InitROM never sets
+     * OBC1 (obc1.c), S-RTC (srtc.c), SA-1 (sa1.c/sa1cpu.c), and -- each behind
+     * its own CMake option -- the SPC7110 and its RTC-4513 (ENABLE_SPC7110,
+     * spc7110.c) and the S-DD1 (ENABLE_SDD1, sdd1.c). So Super Mario Kart,
+     * Pilotwings, Star Fox, Yoshi's Island, Mega Man X2/X3, Metal Combat, Dai
+     * Kaijuu Monogatari II, Super Mario RPG, Kirby Super Star, Tengai Makyou
+     * Zero, Street Fighter Alpha 2 and Star Ocean all load. With an option
+     * off, that chip's carts are refused here instead. Note: SETA (ST01x) and
+     * BS-X are unimplemented but cannot be tested for -- InitROM never sets
      * Settings.SETA/BS, so such carts slip through and run without the chip. */
-    if (Settings.SDD1
+    if (false
+#if !ENABLE_SDD1
+        || Settings.SDD1
+#endif
 #if !ENABLE_SPC7110
         || Settings.SPC7110
 #endif
@@ -1850,6 +1860,9 @@ int main()
         S9xDeinitSound();
         S9xDeinitAPU();
         S9xDeinitMemory();
+#if ENABLE_SDD1
+        sdd1_dma_free();   /* no-op unless an S-DD1 cart was loaded */
+#endif
         Frens::dumpHeapStats("after-deinit");
 
         selectedRom[0] = 0;

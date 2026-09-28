@@ -190,6 +190,21 @@ if(ENABLE_SPC7110)
     message(STATUS "ENABLE_SPC7110=1 — SPC7110 decompressor + RTC-4513")
 endif()
 
+# S-DD1: Nintendo's graphics decompressor and 1 MB ROM bank mapper. Street
+# Fighter Alpha 2 and Star Ocean. Andreas Naive's decompressor, by way of the C
+# port in libretro/snes9x2010 (sdd1.c) -- self-contained, no "decomp pack"
+# file. sdd1.c is not an SRAM hot file, so its code and tables run from flash;
+# its decompressor state and a 64 KB DMA staging buffer share one PSRAM block
+# that is allocated only when an S-DD1 cart is reset. SRAM cost is the call
+# sites in dma.c and ppu.c plus one pointer. OFF restores the load-time
+# rejection. Directory-scoped so it reaches the snes9x_core build (sdd1.c,
+# dma.c, ppu.c, cpu.c).
+option(ENABLE_SDD1 "S-DD1 decompressor + bank mapper (Street Fighter Alpha 2, Star Ocean)" ON)
+if(ENABLE_SDD1)
+    add_definitions(-DENABLE_SDD1=1)
+    message(STATUS "ENABLE_SDD1=1 — S-DD1 decompressor + bank mapper")
+endif()
+
 # The MSU1: health line is otherwise printed only when the card is
 # struggling (underruns, a slow read, or a draining ring), matching the
 # audio-health readout in run_emulator(). Turn this on to get it every

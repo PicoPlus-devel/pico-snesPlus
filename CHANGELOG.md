@@ -1,6 +1,6 @@
 # CHANGELOG
 
-**v0.7** adds the **SPC7110** cartridges — Far East of Eden Zero, Momotarou Dentetsu Happy and Super Power League 4 — including the clock in the Far East of Eden Zero cartridge.
+**v0.7** adds the **SPC7110** cartridges — Far East of Eden Zero, Momotarou Dentetsu Happy and Super Power League 4 — including the clock in the Far East of Eden Zero cartridge, and the **S-DD1** cartridges, Street Fighter Alpha 2 and Star Ocean.
 
 # General Info
 
@@ -47,6 +47,13 @@ In practice that means the in-game calendar drifts behind the real one, by howev
 ### Big games are copied to the board first
 
 The English translation of Far East of Eden Zero is 7 MB and does not fit in the board's memory. A game that large is copied into the board's own flash memory instead. You are asked first, and a progress bar shows how far along it is; it takes a few minutes. After that the game starts straight away every time. Only one game is kept there, so picking a different oversized game copies that one instead.
+
+## Street Fighter Alpha 2 and Star Ocean
+
+These two games use Nintendo's S-DD1 chip, which unpacks their graphics while the game runs. They were refused at load time until now. They play:
+
+- **Street Fighter Alpha 2**
+- **Star Ocean** (Japan)
 
 ## Fixes
 

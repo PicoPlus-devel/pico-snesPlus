@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the host-side snes9x test harness (three variants, see harness.c).
+# Build the host-side snes9x test harness (six variants, see harness.c).
 # Requires only a native gcc; run from anywhere.
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -8,7 +8,7 @@ SRC="$(cd "$HERE/../../snes9x/src" && pwd)"
 CORE="$SRC/apu.c $SRC/c4.c $SRC/c4emu.c $SRC/clip.c $SRC/cpu.c $SRC/cpuexec.c \
       $SRC/cpuops.c $SRC/dma.c $SRC/dsp.c $SRC/fxemu.c $SRC/fxinst.c \
       $SRC/getset.c $SRC/gfx.c $SRC/globals.c $SRC/memmap.c $SRC/msu1.c \
-      $SRC/obc1.c $SRC/ppu.c $SRC/sa1.c $SRC/sa1cpu.c $SRC/soundux.c \
+      $SRC/obc1.c $SRC/ppu.c $SRC/sa1.c $SRC/sa1cpu.c $SRC/sdd1.c $SRC/soundux.c \
       $SRC/spc700.c $SRC/spc7110.c $SRC/srtc.c $SRC/tile.c"
 
 # Same core defines as snes9x/CMakeLists.txt; the -include flags supply
@@ -36,4 +36,9 @@ gcc -o "$HERE/msu1"      "$HERE/harness.c" $CORE $COMMON -DNO_ZERO_LUT -DRENDER_
 # for every cart without the chip.
 #   ./spc7110 "Tengai Makyou Zero (English v7.0).sfc" /tmp/out tmz 400 20
 gcc -o "$HERE/spc7110"   "$HERE/harness.c" $CORE $COMMON -DNO_ZERO_LUT -DRENDER_TO_FB=1 -DENABLE_SPC7110=1 -DSPC7110_STATS=1 -DAUDIO_WATCHDOG=1
-echo "built: fb1_nolut fb0_nolut fb0_lut msu1 spc7110"
+# Device render flow + the S-DD1 (Street Fighter Alpha 2, Star Ocean). Like
+# spc7110, the only variant built with its chip, so the others stay a
+# byte-identical regression check for the dma.c/ppu.c/cpu.c hooks.
+#   ./sdd1 "Street Fighter Alpha 2 (USA).sfc" /tmp/out sfa2 600 20
+gcc -o "$HERE/sdd1"      "$HERE/harness.c" $CORE $COMMON -DNO_ZERO_LUT -DRENDER_TO_FB=1 -DENABLE_SDD1=1 -DSDD1_STATS=1
+echo "built: fb1_nolut fb0_nolut fb0_lut msu1 spc7110 sdd1"
