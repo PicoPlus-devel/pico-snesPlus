@@ -79,7 +79,8 @@ extern "C" {
 #if ENABLE_SDD1
 /* S-DD1: decompressor + 1 MB bank mapper (Street Fighter Alpha 2, Star
  * Ocean). Wired entirely inside the core; main.cpp only frees its PSRAM
- * staging block when the session ends. See snes9x/src/sdd1.h. */
+ * block when the session ends and shows its cost in the FPS overlay. See
+ * snes9x/src/sdd1.h. */
 #include "sdd1.h"
 #endif
 
@@ -989,6 +990,8 @@ static bool snes9x_load_rom(uintptr_t rom_ptr, size_t romsize, bool read_only)
  *   NN  frames emulated in the last ~1 s window (g_fps, 60 = full speed)
  *   RN  HSTX video resyncs since boot (cumulative — they should stay rare)
  *   FN  the frameskip in effect: frames skipped after each rendered one
+ *   Dn Hn  S-DD1 carts only: ms/s of core0 spent on the chip, and % of the
+ *          requested bytes served by its output cache (sdd1.c)
  * RENDER_TO_FB: target is the anchored framebuffer window (stride 320);
  * legacy: g_snes_private_screen (stride SNES_WIDTH) just before the blit,
  * so it rides along with it (incl. the core1 offload path) at no extra
@@ -1497,9 +1500,25 @@ static void run_emulator(void)
 #if HSTX
                 resyncs = get_video_output_resync_count();
 #endif
-                snprintf(g_fps_text, sizeof(g_fps_text), "%02lu R%d F%d",
-                         (unsigned long)(delta > 99 ? 99 : delta), resyncs,
-                         frameskip_count());
+                int n = snprintf(g_fps_text, sizeof(g_fps_text), "%02lu R%d F%d",
+                                 (unsigned long)(delta > 99 ? 99 : delta), resyncs,
+                                 frameskip_count());
+#if ENABLE_SDD1
+                /* S-DD1 carts append "Dn Hn": ms of core0 time this second
+                 * spent on the chip, and % of the requested bytes the output
+                 * cache supplied ("H-" when the game asked for nothing). */
+                uint32_t sd_us, sd_req, sd_dec;
+                if (n > 0 && n < (int)sizeof(g_fps_text) &&
+                    sdd1_take_stats(&sd_us, &sd_req, &sd_dec)) {
+                    if (sd_req)
+                        snprintf(g_fps_text + n, sizeof(g_fps_text) - n, " D%lu H%lu",
+                                 (unsigned long)((sd_us + 500) / 1000),
+                                 (unsigned long)((uint64_t)(sd_req - sd_dec) * 100 / sd_req));
+                    else
+                        snprintf(g_fps_text + n, sizeof(g_fps_text) - n, " D%lu H-",
+                                 (unsigned long)((sd_us + 500) / 1000));
+                }
+#endif
             }
 #if PROFILE_BUCKETS
             uint32_t d  = delta ? delta : 1;

@@ -35,6 +35,7 @@
 #include "apu.h"
 #include "spc7110.h"
 #include "port_alloc.h"
+#include <time.h>
 #if ENABLE_SPC7110
 #include "spc7110.h"
 #endif
@@ -741,6 +742,10 @@ int main(int argc, char **argv)
                                              : 0xffffffffu;
 
     uint32_t adbg_every = getenv("AUDIODBG") ? (uint32_t)atoi(getenv("AUDIODBG")) : 0;
+    /* FRAME_US=<path>: host microseconds per S9xMainLoop, one "frame us" line
+     * each. Absolute values are the desktop's, but a frame that costs several
+     * times its neighbours here is a frame worth looking at on the device. */
+    FILE *frame_us_log = getenv("FRAME_US") ? fopen(getenv("FRAME_US"), "w") : NULL;
     /* AUDIO_OUT on an ordinary run: dump the stream AUDIODBG mixes. (With
      * MSU-1 active the MSU path owns AUDIO_OUT and the mix instead.) */
     if (adbg_every && getenv("AUDIO_OUT")
@@ -756,6 +761,7 @@ int main(int argc, char **argv)
     /* Per-frame decompression load: the device does all of it synchronously
      * inside the $420B write on core0, so the worst frame is the budget. */
     uint32_t sdd1_frame_max = 0, sdd1_frame_max_at = 0, sdd1_busy_frames = 0;
+    uint32_t sdd1_dframe_max = 0, sdd1_dframe_max_at = 0;
 #endif
 #if ENABLE_SDD1 && SDD1_STATS
     uint32_t sdd1_tr_from = 0xffffffffu, sdd1_tr_to = 0;
@@ -768,6 +774,7 @@ int main(int argc, char **argv)
     for (uint32_t frame = 0; frame <= maxframe; frame++) {
 #if ENABLE_SDD1 && SDD1_STATS
         uint32_t sdd1_bytes_before = sdd1_stats.bytes;
+        uint32_t sdd1_dbytes_before = sdd1_stats.decomp_bytes;
         sdd1_trace = (frame >= sdd1_tr_from && frame <= sdd1_tr_to);
         if (sdd1_trace && sdd1_stats.bytes == sdd1_bytes_before)
             printf("frame %u\n", frame);
@@ -795,12 +802,21 @@ int main(int argc, char **argv)
         IPPU.RenderThisFrame = true;
         trace_blocks = (frame >= trace_from);
         if (trace_blocks) fprintf(stderr, "frame %u:\n", frame);
+        struct timespec ft0, ft1;
+        if (frame_us_log) clock_gettime(CLOCK_MONOTONIC, &ft0);
         S9xMainLoop();
+        if (frame_us_log) {
+            clock_gettime(CLOCK_MONOTONIC, &ft1);
+            fprintf(frame_us_log, "%u %ld\n", frame,
+                    (long)((ft1.tv_sec - ft0.tv_sec) * 1000000L + (ft1.tv_nsec - ft0.tv_nsec) / 1000));
+        }
 #if ENABLE_SDD1 && SDD1_STATS
         {
-            uint32_t b = sdd1_stats.bytes - sdd1_bytes_before;
+            uint32_t b  = sdd1_stats.bytes - sdd1_bytes_before;
+            uint32_t db = sdd1_stats.decomp_bytes - sdd1_dbytes_before;
             if (b) sdd1_busy_frames++;
             if (b > sdd1_frame_max) { sdd1_frame_max = b; sdd1_frame_max_at = frame; }
+            if (db > sdd1_dframe_max) { sdd1_dframe_max = db; sdd1_dframe_max_at = frame; }
         }
 #endif
         if (frame >= trace_from)
@@ -842,14 +858,20 @@ int main(int argc, char **argv)
 #endif
 #if ENABLE_SDD1 && SDD1_STATS
     if (Settings.SDD1) {
-        printf("SDD1: decompressions = %u (bitplane type 0/1/2/3 = %u/%u/%u/%u)  "
-               "bytes = %u  largest transfer = %u\n",
-               sdd1_stats.stages, sdd1_stats.mode_count[0], sdd1_stats.mode_count[1],
-               sdd1_stats.mode_count[2], sdd1_stats.mode_count[3],
-               sdd1_stats.bytes, sdd1_stats.max_transfer);
-        printf("SDD1: frames with decompression = %u of %u  worst frame = %u bytes "
-               "(frame %u)  avg per busy frame = %u\n",
+        printf("SDD1: transfers = %u (%u from cache)  bytes requested = %u  "
+               "decompressed = %u (%.1f %% from cache)  largest transfer = %u\n",
+               sdd1_stats.stages, sdd1_stats.hit_stages, sdd1_stats.bytes,
+               sdd1_stats.decomp_bytes,
+               sdd1_stats.bytes ? 100.0 * (sdd1_stats.bytes - sdd1_stats.decomp_bytes)
+                                  / sdd1_stats.bytes : 0.0,
+               sdd1_stats.max_transfer);
+        printf("SDD1: decompressions by bitplane type 0/1/2/3 = %u/%u/%u/%u\n",
+               sdd1_stats.mode_count[0], sdd1_stats.mode_count[1],
+               sdd1_stats.mode_count[2], sdd1_stats.mode_count[3]);
+        printf("SDD1: frames with a transfer = %u of %u  worst frame requested %u bytes "
+               "(frame %u), decompressed %u (frame %u)  avg requested per busy frame = %u\n",
                sdd1_busy_frames, maxframe + 1, sdd1_frame_max, sdd1_frame_max_at,
+               sdd1_dframe_max, sdd1_dframe_max_at,
                sdd1_busy_frames ? sdd1_stats.bytes / sdd1_busy_frames : 0);
         printf("SDD1: bank writes = %u  pages selected = 0x%04x  "
                "armed-but-ignored DMAs = %u\n",
@@ -919,6 +941,7 @@ int main(int argc, char **argv)
         }
     }
     printf("done: %u frames\n", maxframe + 1);
+    if (frame_us_log) fclose(frame_us_log);
     if (adbg_audio_out) fclose(adbg_audio_out);
     return 0;
 }

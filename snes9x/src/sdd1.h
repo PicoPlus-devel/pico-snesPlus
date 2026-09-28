@@ -8,9 +8,10 @@
  *
  * Pico port changes that affect callers:
  *   - the decompressor state is no longer file-scope .bss; it lives in PSRAM
- *     together with the DMA staging buffer. Both are allocated by
- *     S9xResetSDD1 and freed by sdd1_dma_free, which the caller must run when
- *     the session ends. A cart without the chip costs 4 bytes of SRAM.
+ *     together with a cache of decompressed output (~268 KB). Both are
+ *     allocated by S9xResetSDD1 and freed by sdd1_dma_free, which the caller
+ *     must run when the session ends. A cart without the chip costs 4 bytes
+ *     of SRAM.
  *   - the DMA hook is sdd1_dma_stage(), the same shape as spc7110_dma_stage().
  *   - save-state marshalling is gone; this port has no save states. */
 
@@ -18,6 +19,7 @@
 #define _SDD1_H_
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,18 +39,26 @@ void S9xResetSDD1 (void);
 
 /* DMA staging, mirroring spc7110_dma_stage(). The chip substitutes
  * decompressed data for a fixed-address DMA out of banks $c0-$ff on a channel
- * armed in both $4800 and $4801; decompress the whole transfer into a PSRAM
- * buffer and let dma.c's normal loop walk that. Returns NULL for every
- * transfer the chip does not intercept. count is 1..0x10000. */
+ * armed in both $4800 and $4801; find the result in the PSRAM output cache or
+ * decompress it there, and let dma.c's normal loop walk that. Returns NULL for
+ * every transfer the chip does not intercept. count is 1..0x10000. */
 uint8_t *sdd1_dma_stage (uint8_t channel, uint32_t count);
 void sdd1_dma_free (void);
+
+/* Counters since the previous call, then reset: microseconds spent in
+ * sdd1_dma_stage (device only; 0 on the host), bytes the game asked for, and
+ * bytes that had to be decompressed rather than taken from the cache. False
+ * when no S-DD1 cart is loaded. */
+bool sdd1_take_stats (uint32_t *us, uint32_t *requested, uint32_t *decompressed);
 
 #if SDD1_STATS
 /* Bring-up instrumentation, built only by the host harness (-DSDD1_STATS=1). */
 struct Sdd1Stats
 {
-	uint32_t stages;          /* transfers decompressed */
-	uint32_t bytes;           /* bytes decompressed, cumulative */
+	uint32_t stages;          /* transfers the chip handled */
+	uint32_t hit_stages;      /* ... of which served from the cache */
+	uint32_t bytes;           /* bytes requested, cumulative */
+	uint32_t decomp_bytes;    /* bytes actually decompressed (cache misses) */
 	uint32_t max_transfer;    /* largest single transfer */
 	uint32_t ignored_armed;   /* armed channel, but not a fixed $c0+ DMA */
 	uint32_t bank_writes;     /* $4804-$4807 writes */

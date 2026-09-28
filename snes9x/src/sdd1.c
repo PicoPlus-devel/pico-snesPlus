@@ -15,10 +15,12 @@
  *
  * Ported from libretro/snes9x2010 src/sdd1.c. Pico port changes:
  *   - the decompressor's state was ~220 bytes of file-scope .bss; it is now a
- *     struct in the same PSRAM block as the DMA staging buffer, allocated when
- *     an S-DD1 cart is reset, so a cart without the chip pays nothing but the
+ *     struct in the same PSRAM block as the output cache, allocated when an
+ *     S-DD1 cart is reset, so a cart without the chip pays nothing but the
  *     pointer. Every decompression resets that state, so nothing is lost by
  *     keeping it off the SRAM heap.
+ *   - decompressed output is cached (SDD1_CACHE, see the DMA staging section
+ *     below); upstream decompresses every transfer from scratch.
  *   - context_MPS and prev_bits are narrowed from int; only their low bits
  *     are ever used.
  *   - the DMA trigger moved here from S9xDoDMA (sdd1_dma_stage), so the SRAM-
@@ -39,6 +41,15 @@
 #if SDD1_STATS
 struct Sdd1Stats sdd1_stats;
 int sdd1_trace;
+#endif
+
+/* Wall-clock time spent in sdd1_dma_stage, for the on-screen readout. The
+ * host harness has no microsecond timer and reports bytes instead. */
+#if defined(PICO_ON_DEVICE) && PICO_ON_DEVICE
+#include "hardware/timer.h"
+#define SDD1_NOW_US() time_us_32()
+#else
+#define SDD1_NOW_US() 0u
 #endif
 
 /* ------------------------------------------------------------------------
@@ -373,36 +384,102 @@ static void SDD1_decompress (Sdd1Decomp *s, uint8_t *out, uint8_t *in, uint32_t 
  * DMA staging
  * ------------------------------------------------------------------------ */
 
-/* One PSRAM block for the decompressor state and the output of the largest
- * possible transfer (dma.c normalises a zero TransferBytes to 0x10000). Fixed
- * size, for the same reasons as the SPC7110's staging buffer (spc7110.c): a
- * failed mid-game allocation would leave dma.c copying compressed bytes, and
- * regrowth would churn the next-fit heap.
+/* One PSRAM block holds the decompressor state, the per-second counters, the
+ * cache index and the output arena. Fixed size, for the same reasons as the
+ * SPC7110's staging buffer (spc7110.c): a failed mid-game allocation would
+ * leave dma.c copying compressed bytes, and regrowth would churn the next-fit
+ * heap.
  *
  * Allocated at cart reset rather than on the first transfer: both S-DD1 games
  * decompress from the first screen on, and reset is where a failure can be
  * reported once without a static "already said so" flag in SRAM. Freed by
- * main.cpp when the session ends. */
-#define SDD1_DMA_BUF_BYTES 0x10000u
+ * main.cpp when the session ends.
+ *
+ * Output cache (SDD1_CACHE). Decompression costs ~417 Cortex-M33 instructions
+ * per output byte (bit-serial: eight probability-model steps per byte), and
+ * both games decompress the same data over and over -- fighter animation
+ * frames, text-box and portrait graphics. The output depends only on the ROM
+ * bytes at the source, which never change, so a result can be reused for as
+ * long as it is kept, and a shorter request at the same ROM offset is simply a
+ * prefix of a longer one already decompressed.
+ *
+ * Results go into a ring arena in the order they were decompressed; only
+ * misses write to it, so it turns over slowly. `head` counts every byte ever
+ * placed in the arena, and each index slot records where its result started
+ * in that count, so a slot is still valid exactly while head - pos <= the
+ * arena size. A result never straddles the arena end: one that would not fit
+ * starts again at the beginning, and the skipped tail only makes the validity
+ * test conservative. The index is direct-mapped on the ROM offset. A hit hands
+ * dma.c a pointer into the arena -- no copy.
+ *
+ * Measured on the host harness (256 KB arena, 1024 slots): 96.7 % of the bytes
+ * an SF Alpha 2 fight asks for, and 99.5 % of Star Ocean's in town, come from
+ * the cache. */
+#define SDD1_MAX_TRANSFER 0x10000u
+
+#ifndef SDD1_CACHE
+#define SDD1_CACHE 1
+#endif
+
+#if SDD1_CACHE
+#define SDD1_CACHE_BITS  10u                     /* 1024 index slots */
+#define SDD1_CACHE_SLOTS (1u << SDD1_CACHE_BITS)
+/* Largest first. Star Ocean (6 MB) leaves ~1 MB of PSRAM spare, so 256 KB is
+ * expected to succeed; the smaller sizes keep the chip working, with a lower
+ * hit rate, if something else has taken the room. Powers of two, >= the
+ * largest transfer. */
+static const uint32_t sdd1_arena_sizes[] = { 256u << 10, 128u << 10, 64u << 10 };
 
 typedef struct
 {
-	Sdd1Decomp st;
-	uint8_t    out[SDD1_DMA_BUF_BYTES];
+	uint32_t rom_off;   /* source offset in Memory.ROM */
+	uint32_t len;       /* bytes decompressed; 0 = empty */
+	uint32_t pos;       /* where they start in the arena's running byte count */
+} Sdd1CacheSlot;
+#else
+static const uint32_t sdd1_arena_sizes[] = { SDD1_MAX_TRANSFER };
+#endif
+
+typedef struct
+{
+	Sdd1Decomp    st;
+	uint32_t      arena_size;   /* power of two, >= SDD1_MAX_TRANSFER */
+	uint32_t      head;         /* bytes ever placed in the arena */
+	uint32_t      acc_us;       /* counters for sdd1_take_stats() */
+	uint32_t      acc_req;
+	uint32_t      acc_decomp;
+#if SDD1_CACHE
+	Sdd1CacheSlot slot[SDD1_CACHE_SLOTS];
+#endif
+	uint8_t       arena[];
 } Sdd1Stage;
 
 static Sdd1Stage *sdd1_stage_buf;
 
 static void sdd1_dma_alloc (void)
 {
+	unsigned i;
+
 	if (sdd1_stage_buf)
 		return;
-	sdd1_stage_buf = (Sdd1Stage *) port_alloc_psram(sizeof(Sdd1Stage));
+	for (i = 0; i < sizeof(sdd1_arena_sizes) / sizeof(sdd1_arena_sizes[0]); i++)
+	{
+		sdd1_stage_buf = (Sdd1Stage *) port_alloc_psram(sizeof(Sdd1Stage) + sdd1_arena_sizes[i]);
+		if (sdd1_stage_buf)
+			break;
+	}
 	if (!sdd1_stage_buf)
+	{
 		/* Loud, not silent: without the buffer dma.c copies the compressed
 		 * bytes, so say so rather than let it look like a game bug. */
 		printf("sdd1: cannot allocate %u bytes of PSRAM - graphics will be wrong\n",
-		       (unsigned) sizeof(Sdd1Stage));
+		       (unsigned) (sizeof(Sdd1Stage) + SDD1_MAX_TRANSFER));
+		return;
+	}
+	memset(sdd1_stage_buf, 0, sizeof(Sdd1Stage));
+	sdd1_stage_buf->arena_size = sdd1_arena_sizes[i];
+	printf("sdd1: %u KB output %s in PSRAM\n", (unsigned) (sdd1_arena_sizes[i] >> 10),
+	       SDD1_CACHE ? "cache" : "buffer");
 }
 
 void sdd1_dma_free (void)
@@ -411,11 +488,27 @@ void sdd1_dma_free (void)
 	sdd1_stage_buf = NULL;
 }
 
+bool sdd1_take_stats (uint32_t *us, uint32_t *requested, uint32_t *decompressed)
+{
+	Sdd1Stage *b = sdd1_stage_buf;
+
+	if (!b)
+		return false;
+	*us           = b->acc_us;
+	*requested    = b->acc_req;
+	*decompressed = b->acc_decomp;
+	b->acc_us = b->acc_req = b->acc_decomp = 0;
+	return true;
+}
+
 uint8_t *sdd1_dma_stage (uint8_t channel, uint32_t count)
 {
-	SDMA    *d = &DMA[channel];
-	uint8_t  armed = Memory.FillRAM[0x4800] & Memory.FillRAM[0x4801] & (1 << channel);
-	uint8_t *in;
+	SDMA      *d = &DMA[channel];
+	uint8_t    armed = Memory.FillRAM[0x4800] & Memory.FillRAM[0x4801] & (1 << channel);
+	Sdd1Stage *b = sdd1_stage_buf;
+	uint8_t   *in, *out;
+	uint32_t   t0, rom_off;
+	bool       hit = false;
 
 	if (!armed)
 		return NULL;
@@ -440,26 +533,62 @@ uint8_t *sdd1_dma_stage (uint8_t channel, uint32_t count)
 	/* No buffer: already reported by sdd1_dma_alloc. No base pointer: cannot
 	 * happen for $c0-$ff, which S9xSetSDD1MemoryMap always points at ROM. */
 	in = GetBasePointer((d->ABank << 16) | d->AAddress);
-	if (!sdd1_stage_buf || !in)
+	if (!b || !in)
 		return NULL;
+	in     += d->AAddress;
+	rom_off = (uint32_t) (in - Memory.ROM);
+	t0      = SDD1_NOW_US();
 
-	SDD1_decompress(&sdd1_stage_buf->st, sdd1_stage_buf->out, in + d->AAddress, count);
+#if SDD1_CACHE
+	{
+		Sdd1CacheSlot *s = &b->slot[(rom_off * 0x9E3779B1u) >> (32 - SDD1_CACHE_BITS)];
+
+		if (s->rom_off == rom_off && s->len >= count &&
+		    b->head - s->pos <= b->arena_size)
+		{
+			out = &b->arena[s->pos & (b->arena_size - 1)];
+			hit = true;
+		}
+		else
+		{
+			uint32_t pos = b->head;
+
+			if ((pos & (b->arena_size - 1)) + count > b->arena_size)
+				pos = (pos + b->arena_size - 1) & ~(b->arena_size - 1);
+			out = &b->arena[pos & (b->arena_size - 1)];
+			SDD1_decompress(&b->st, out, in, count);
+			s->rom_off = rom_off;
+			s->len     = count;
+			s->pos     = pos;
+			b->head    = pos + count;
+		}
+	}
+#else
+	out = b->arena;
+	SDD1_decompress(&b->st, out, in, count);
+#endif
+
+	b->acc_us  += SDD1_NOW_US() - t0;
+	b->acc_req += count;
+	if (!hit)
+		b->acc_decomp += count;
 
 #if SDD1_STATS
 	if (sdd1_trace)
-		printf("sdd1: ch%u %02x:%04x rom+%06x len %5u hdr %02x %02x -> %02x %02x %02x %02x\n",
-		       channel, d->ABank, d->AAddress,
-		       (unsigned) (in + d->AAddress - Memory.ROM), (unsigned) count,
-		       in[d->AAddress], in[d->AAddress + 1],
-		       sdd1_stage_buf->out[0], sdd1_stage_buf->out[1],
-		       sdd1_stage_buf->out[2], sdd1_stage_buf->out[3]);
+		printf("sdd1: ch%u %02x:%04x rom+%06x len %5u %s hdr %02x %02x -> %02x %02x %02x %02x\n",
+		       channel, d->ABank, d->AAddress, (unsigned) rom_off, (unsigned) count,
+		       hit ? "hit " : "miss", in[0], in[1], out[0], out[1], out[2], out[3]);
 	sdd1_stats.stages++;
 	sdd1_stats.bytes += count;
+	if (hit)
+		sdd1_stats.hit_stages++;
+	else
+		sdd1_stats.decomp_bytes += count;
 	if (count > sdd1_stats.max_transfer)
 		sdd1_stats.max_transfer = count;
 #endif
 
-	return sdd1_stage_buf->out;
+	return out;
 }
 
 #endif /* ENABLE_SDD1 */

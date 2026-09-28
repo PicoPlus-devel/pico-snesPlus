@@ -55,6 +55,12 @@ Many SNES cartridges carry an extra chip that the console itself does not have. 
 
 Two chips, SETA (ST010/ST011) and BS-X, are not emulated. They are also not detected, so those carts load and then run without the chip rather than being refused. Expect them to misbehave.
 
+### S-DD1
+
+The S-DD1 unpacks graphics while the game runs, which is costly to emulate. Results are therefore kept in a cache in PSRAM, so graphics the game has already unpacked once, such as recurring animation frames, are not unpacked again. With the frame rate display enabled, S-DD1 games show two additional values after the frame skip setting: `D`, the milliseconds per second spent emulating the chip, and `H`, the percentage of graphics data taken from the cache.
+
+Street Fighter Alpha 2 runs at full speed with frame skip enabled. With frame skip disabled it runs at about 45 to 50 fps; the chip accounts for at most 25 ms per second of processor time during play, so the limit is the cost of drawing every frame rather than the chip. The pause while "FIGHT!" is displayed at the start of each round is part of the game: it loads the sound data for the round and the timer starts once that is complete.
+
 ### SPC7110
 
 The SPC7110 is Hudson's compression and mapping chip, used by a small number of Japanese cartridges: Far East of Eden Zero (Tengai Makyou Zero), Momotarou Dentetsu Happy and Super Power League 4. The English fan translation of Far East of Eden Zero is supported as well. Far East of Eden Zero additionally carries an RTC-4513 real-time clock, which the game uses for its day and night cycle and for events tied to the date. It is emulated, subject to the limitation described below.

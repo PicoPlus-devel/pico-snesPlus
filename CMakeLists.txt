@@ -194,8 +194,8 @@ endif()
 # Fighter Alpha 2 and Star Ocean. Andreas Naive's decompressor, by way of the C
 # port in libretro/snes9x2010 (sdd1.c) -- self-contained, no "decomp pack"
 # file. sdd1.c is not an SRAM hot file, so its code and tables run from flash;
-# its decompressor state and a 64 KB DMA staging buffer share one PSRAM block
-# that is allocated only when an S-DD1 cart is reset. SRAM cost is the call
+# its decompressor state and output cache (below) share one PSRAM block that
+# is allocated only when an S-DD1 cart is reset. SRAM cost is the call
 # sites in dma.c and ppu.c plus one pointer. OFF restores the load-time
 # rejection. Directory-scoped so it reaches the snes9x_core build (sdd1.c,
 # dma.c, ppu.c, cpu.c).
@@ -203,6 +203,22 @@ option(ENABLE_SDD1 "S-DD1 decompressor + bank mapper (Street Fighter Alpha 2, St
 if(ENABLE_SDD1)
     add_definitions(-DENABLE_SDD1=1)
     message(STATUS "ENABLE_SDD1=1 — S-DD1 decompressor + bank mapper")
+endif()
+
+# S-DD1 output cache. Decompression costs ~417 Cortex-M33 instructions per
+# byte, and both games keep decompressing the same data (animation frames,
+# text-box graphics). With the cache a repeat is a pointer into a 256 KB PSRAM
+# arena instead of a fresh decompression: 96.7 % of the bytes an SF Alpha 2
+# fight asks for and 99.5 % of Star Ocean's in town come from it (host
+# harness). ~204 KB more PSRAM than the plain 64 KB buffer, no SRAM. OFF only to
+# compare: the on-screen readout (D = ms/s spent on the chip, H = % served
+# from the cache) shows the difference.
+option(SDD1_CACHE "Cache S-DD1 decompressed output in PSRAM" ON)
+if(SDD1_CACHE)
+    add_definitions(-DSDD1_CACHE=1)
+else()
+    add_definitions(-DSDD1_CACHE=0)
+    message(STATUS "SDD1_CACHE=0 — every S-DD1 transfer is decompressed from scratch")
 endif()
 
 # The MSU1: health line is otherwise printed only when the card is

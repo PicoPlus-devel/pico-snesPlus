@@ -68,6 +68,14 @@ as a request to start its first stage over, so the run never advances.
 `RESET_AT=<frame>` issues a soft reset (`S9xReset`), the way you would press
 the console's reset button. `Memory.SRAM` survives it.
 
+`FRAME_US=<path>` writes the host time of every `S9xMainLoop` call to that
+file, one `frame microseconds` line each. The absolute numbers are the
+desktop's, but a frame that costs several times its neighbours here deserves a
+look on the device. It is how the pause at "FIGHT!" in Street Fighter Alpha 2
+was shown not to be emulation cost: no frame of the round intro costs more
+than three times a normal fight frame, and `AUDIODBG` shows the game uploading
+~47 KB of sound data to the SPC700 while it waits.
+
 `TRACE_FROM=<frame>` in the environment logs, from that frame on, every
 strip-chunk row range (`fb1` only) and the PPU state per frame (BGMode,
 $2130-$2133, TM/TS, screen height) to stderr — this is how a mid-frame
@@ -256,15 +264,24 @@ PAD_AUTO=30 PAD_FROM=900 PAD_MASK=0x1080 ./sdd1 "Star Ocean (Japan).sfc" out so 
 ```
 
 The first `PAD_AUTO` run reaches a Ryu vs M. Bison fight; the second plays
-through Star Ocean's opening. The run ends with a tally:
+through Star Ocean's opening. The run ends with a tally (here SF Alpha 2 over
+20000 frames with `AUDIODBG` on, which keeps the sound driver's timing
+device-like):
 
 ```
-SDD1: decompressions = 2100 (bitplane type 0/1/2/3 = 37/0/2063/0)  bytes = 3285170  largest transfer = 32000
-SDD1: frames with decompression = 1483 of 8001  worst frame = 40192 bytes (frame 1669)  avg per busy frame = 2215
+SDD1: transfers = 5554 (5342 from cache)  bytes requested = 8573266  decompressed = 502482 (94.1 % from cache)  largest transfer = 32000
+SDD1: decompressions by bitplane type 0/1/2/3 = 30/0/182/0
+SDD1: frames with a transfer = 3968 of 20001  worst frame requested 40192 bytes (frame 1669), decompressed 40192 (frame 1669)  avg requested per busy frame = 2160
 SDD1: bank writes = 0  pages selected = 0x000f  armed-but-ignored DMAs = 0
 SDD1: bank register value bits seen: $4804=00 $4805=00 $4806=00 $4807=00
 SDD1: register reads:
 ```
+
+`decompressed` against `bytes requested` is the output cache at work
+(`SDD1_CACHE`, see `sdd1.c`): only misses cost decompression time. The cache
+must never change what the game sees, so after touching it build the harness
+once more with `-DSDD1_CACHE=0` added to the `sdd1` line and compare: frames
+and `AUDIO_OUT` must be byte-identical over a long run of each game.
 
 `SDD1_TRACE=<from>,<to>` prints every decompression in that frame window
 (channel, A-bus source, ROM offset, length, first bytes), which shows exactly
@@ -272,8 +289,10 @@ which ROM data a scene is built from; comparing two ROM versions this way
 showed the Star Ocean English patch leaves the opening's subtitle graphics
 untouched (Mesen shows the same Japanese subtitles there).
 
-`worst frame` is the one to watch for performance: the device decompresses a
-whole transfer synchronously inside the `$420B` write on core0. `pages
+`worst frame ... decompressed` is the one to watch for performance: the
+device decompresses a whole transfer synchronously inside the `$420B` write on
+core0, so a first-time scene load of 32-40 KB is a hitch of a few frames even
+with the cache. `SDD1_TRACE` marks each transfer `hit` or `miss`. `pages
 selected` is a bitmask of the 1 MB ROM pages the game mapped into `$c0-$ff`;
 Star Ocean (6 MB) must show `0x003f`. Anything above bit 5 there means a bank
 register read back wrong: Star Ocean saves and restores `$4806`/`$4807` by
