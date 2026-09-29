@@ -162,8 +162,9 @@ Every binary has live mode. Pick the one that matches the cart:
 | MSU-1 packs                                                     | `msu1` with `MSU=0`     |
 | comparing the render paths                                      | `fb0_nolut`, `fb0_lut`  |
 
-S-DD1 and SPC7110 carts also start in the other binaries, but with garbage
-graphics, because only `sdd1` and `spc7110` are built with those chips.
+Only `sdd1` and `spc7110` are built with those chips, and in the other
+binaries these carts do not work: Street Fighter Alpha 2 runs with garbage
+graphics, and Star Ocean and Tengai Makyou Zero show a black screen.
 
 ### Controls
 
@@ -626,8 +627,10 @@ count is the steady-state decompression load the RP2350 has to absorb.
 
 Built with `ENABLE_SDD1=1 SDD1_STATS=1`, and like `spc7110` the only variant
 with its chip, so the others stay a byte-identical regression check for the
-`dma.c` / `ppu.c` / `cpu.c` hooks. Without the chip both games still boot, but
-every decompressed tile is garbage, which makes a quick A/B:
+`dma.c` / `ppu.c` / `cpu.c` hooks. Without the chip Street Fighter Alpha 2
+still runs, but every decompressed tile is garbage, which makes a quick A/B.
+Star Ocean does not get that far: without the chip it never enables a
+background layer, so the screen stays black.
 
 ```bash
 ./fb1_nolut "Street Fighter Alpha 2 (USA).sfc" out/a sfa2 1100 1100   # stripes
