@@ -4,7 +4,11 @@ Runs the vendored snes9x core from this repository natively on Linux and
 dumps rendered frames as PPM images. Render bugs can be reproduced,
 bisected and fixed on a desktop machine in seconds — no board, flashing or
 capture hardware needed. It was built to find the DKC "Nintendo presents"
-mode-5 strip-seam bug and is kept for future rendering work.
+mode-5 strip-seam bug and is kept for future rendering work. In live mode
+(`LIVE=1`, see [Live mode](#live-mode-live1)) it shows the frames in a window,
+plays the sound and takes keyboard input, so a game can also be checked by
+eye and ear, and a session played by hand can be replayed exactly for
+dumps and comparisons.
 
 The harness boots the core through the exact same sequence `main.cpp` uses
 on the RP2350 (same `Settings`, same init order, same `LoadROM(NULL)`
@@ -19,7 +23,16 @@ sync when `port_glue.cpp` changes.
 tools/host-harness/build.sh
 ```
 
-Needs only a native `gcc`. Produces six binaries in this directory:
+Needs a native `gcc`. SDL2 is optional: when its development package is
+installed, every binary is built with live mode; without it the binaries are
+built exactly as before, and `LIVE=1` exits with a message saying so. The
+first line `build.sh` prints tells which of the two it did.
+
+```bash
+sudo apt install libsdl2-dev        # Debian/Ubuntu: only needed for live mode
+```
+
+Produces six binaries in this directory:
 
 | binary      | meaning                                                        |
 | ----------- | -------------------------------------------------------------- |
@@ -93,6 +106,362 @@ title letter triggers its easter-egg animation.
 MOUSE=1 MOUSE_CLICK=471 ./fb1_nolut mariopaint.sfc out mp 700 50 450
 ```
 
+## Live mode (`LIVE=1`)
+
+With `LIVE=1` the harness opens a window that shows every frame as it is
+rendered, plays the mixed audio through the desktop's sound output, and
+reads the keyboard as the port-1 pad. The emulation is paced to real time:
+60 frames per second, 50 for a PAL game. Live mode is meant for checks that
+are easier to make by eye and ear than from PPM dumps and raw audio files:
+whether a scene looks right, whether music plays at the right tempo and
+without glitches, and whether a game reacts correctly to input.
+
+Live mode is **not a preview of device speed**. The desktop runs the core at
+full speed and renders every frame, whereas on the Fruit Jam many games need
+frame skip and some still run below 60 fps. Neither frame skip nor device
+slowdown is modelled; `FPS=<n>` on the `msu1` binary is the only slowdown
+model (see [below](#using-live-mode-with-the-other-options)). Live mode shows
+what the core draws and plays, not how fast the board runs it.
+
+Without `LIVE=1` nothing changes: headless runs produce the same PPMs and
+audio, byte for byte, as a build without SDL2.
+
+### Starting
+
+```bash
+cd tools/host-harness
+LIVE=1 ./fb1_nolut smw.sfc
+```
+
+Only the ROM is required. The other arguments keep their headless meaning
+and are optional:
+
+```bash
+LIVE=1 ./fb1_nolut <rom.sfc> [outdir] [tag] [maxframe] [dumpstep] [dumpfrom]
+```
+
+| argument   | live default | meaning                                              |
+| ---------- | ------------ | ---------------------------------------------------- |
+| `outdir`   | `.`          | directory for F12 dumps and periodic dumps           |
+| `tag`      | `live`       | file name prefix: `<outdir>/<tag>_f00192.ppm`        |
+| `maxframe` | unlimited    | quit automatically after this frame                  |
+| `dumpstep` | none         | also dump every `dumpstep`-th frame, as headless     |
+| `dumpfrom` | `0`          | first frame of the periodic dumps                    |
+
+For example, `LIVE=1 ./fb1_nolut smw.sfc out smw 3599 600` plays one minute,
+writes a dump into `out/` every ten seconds, and then quits. As in headless
+runs, the output directory must already exist.
+
+Every binary has live mode. Pick the one that matches the cart:
+
+| cart                                                            | binary                  |
+| --------------------------------------------------------------- | ----------------------- |
+| all others, including SuperFX, SA-1, DSP-1, C4, OBC1 and S-RTC  | `fb1_nolut`             |
+| S-DD1: Street Fighter Alpha 2, Star Ocean                        | `sdd1`                  |
+| SPC7110: Tengai Makyou Zero, Momotarou Dentetsu Happy, Super Power League 4 | `spc7110`  |
+| MSU-1 packs                                                     | `msu1` with `MSU=0`     |
+| comparing the render paths                                      | `fb0_nolut`, `fb0_lut`  |
+
+S-DD1 and SPC7110 carts also start in the other binaries, but with garbage
+graphics, because only `sdd1` and `spc7110` are built with those chips.
+
+### Controls
+
+Keys reach the harness only while its window has keyboard focus; click the
+window if key presses have no effect. The pad keys are the ones a USB
+keyboard uses on the device (`pico_shared/hid_app.cpp`):
+
+| key        | SNES button |
+| ---------- | ----------- |
+| arrow keys | D-pad       |
+| Z          | A           |
+| X          | B           |
+| C          | X           |
+| V          | Y           |
+| Q          | L           |
+| W          | R           |
+| S          | Start       |
+| A          | Select      |
+
+The letter keys are matched by position, as on the device, so on a
+non-QWERTY layout they are the keys in the same places.
+
+| key        | action |
+| ---------- | ------ |
+| Space      | Pause or resume. While paused the sound stops and the window title shows `PAUSED`. |
+| N          | While paused: run exactly one frame. Held down, it keeps stepping at the keyboard repeat rate. |
+| Tab (hold) | Fast-forward: run as fast as the host allows, typically several hundred frames per second. The sound output is silent while Tab is held, but the game's sound is still emulated and mixed. |
+| F12        | Write the frame on screen to `<outdir>/<tag>_f<frame>.ppm` and print its path. Works while paused. |
+| F5         | Soft reset (`S9xReset`, the same as `RESET_AT`) at the start of the next frame. While paused it takes effect on the next step or on resume. |
+| Esc        | Quit. Closing the window, or Ctrl-C in the terminal, does the same. |
+
+Quitting always runs the normal end of the run: the chip tallies (`SDD1:`,
+`SPC7110:`, `MSU1:`) are printed and `SRAM_OUT` is written.
+
+The keyboard pad is combined with `PAD_AUTO` (the two masks are ORed), so
+scripted taps and your own presses can be used together. During a
+`PAD_PLAY` replay the recording supplies the pad instead, until it ends
+(see [Recording and replaying input](#recording-and-replaying-input-pad_rec-pad_play)).
+
+### Window, sound and pacing
+
+- `SCALE=<n>` sets the initial window size to 320x240 times `n` (default 3,
+  960x720). The window can be resized; the picture is scaled by whole
+  multiples with nearest-neighbour filtering and centred.
+- The strip-renderer binaries (`fb1_nolut`, `msu1`, `spc7110`, `sdd1`) show
+  the full 320x240 framebuffer the device sends to HDMI, with the SNES
+  picture centred in it. The `fb0` binaries show the native SNES picture
+  centred in the same area; hi-res frames (512 wide: modes 5 and 6, and
+  interlace) are squeezed to 256 columns.
+- `MUTE=1` runs without sound output.
+- Pacing follows the sound output: after each frame the harness waits until
+  no more than three frames of audio (about 50 ms) are queued, so the
+  emulation runs exactly as fast as the sound device consumes samples. With
+  `MUTE=1`, or when no sound device can be opened, a timer on the frame
+  period (16.667 ms, or 20 ms for PAL) is used instead.
+- The window title shows the ROM name, the binary, the current frame number
+  and the measured frame rate, for example
+  `THE LEGEND OF ZELDA (fb1_nolut) | frame 4210 | 60.0 fps`. The frame
+  number is the one the headless options expect: `dumpfrom`, `TRACE_FROM`,
+  `DSPLOG`, `APUDUMP`, `SDD1_TRACE` and `RESET_AT`. The rate is updated once
+  per second.
+- `AUDIO_OUT=<path>` also works in live mode. It records everything that was
+  mixed, including the frames run during fast-forward, so it is the complete
+  sound of the session rather than what was heard.
+
+At start-up the terminal shows the drivers SDL chose and a summary of the
+keys:
+
+```
+LIVE: video x11, audio pulseaudio, window 960x720
+LIVE: pad  arrows=D-pad  Z=A  X=B  C=X  V=Y  Q=L  W=R  S=Start  A=Select
+LIVE: keys Space=pause  N=step  Tab=fast-forward (hold)  F12=dump frame  F5=reset  Esc=quit
+```
+
+### Using live mode with the other options
+
+All environment options of the headless harness still apply. Some
+combinations that are useful while playing:
+
+**Battery saves across sessions.** `SRAM` loads a save at start and
+`SRAM_OUT` writes it back when you quit:
+
+```bash
+LIVE=1 SRAM=zelda.srm SRAM_OUT=zelda.srm ./fb1_nolut zelda.sfc
+```
+
+The first time, when `zelda.srm` does not exist yet, the harness reports
+that it cannot open it and starts with a blank battery.
+
+If you also record the session (`PAD_REC`), keep a copy of the save as it
+was before the session: a replay has to start from the same save the
+recording started from, and `SRAM_OUT` overwrites it on quit.
+
+**Sound tracing while playing.** The `AUDIODBG` reports go to the terminal
+while the game runs in the window:
+
+```bash
+LIVE=1 AUDIODBG=60 ./spc7110 "Tengai Makyou Zero (English v7.0).sfc"
+```
+
+**Host time per frame.** `FRAME_US` measures only the emulation of each
+frame, not the wait for real time, so its figures mean the same as in a
+headless run:
+
+```bash
+LIVE=1 FRAME_US=/tmp/frame_us.txt ./sdd1 "Street Fighter Alpha 2 (USA).sfc"
+sort -k2 -n /tmp/frame_us.txt | tail       # the most expensive frames
+```
+
+**MSU-1.** With `MSU=0` the game's own driver plays the pack. `FPS=<n>`
+additionally runs the window at that frame rate, which models a device that
+cannot keep up: the MSU-1 track keeps its tempo, because it is streamed in
+real time as on the device, while the SNES's own sound slows down with the
+game.
+
+```bash
+LIVE=1 MSU=0 ./msu1 alttp_msu.sfc
+LIVE=1 MSU=0 FPS=40 ./msu1 alttp_msu.sfc    # runs at 40 fps
+```
+
+**Mouse.** `MOUSE=1` still attaches the scripted SNES Mouse, and its cursor
+circles on screen in live mode as well. The host mouse is not used.
+
+**Resets.** `RESET_AT=<frame>` works as in headless runs, in addition to F5.
+
+### Recording and replaying input (`PAD_REC`, `PAD_PLAY`)
+
+A session played by hand cannot be repeated frame-exactly by hand, so a
+glitch seen while playing is hard to pin down with dumps and A/B
+comparisons. `PAD_REC=<file>` records all input the machine receives during
+a run; `PAD_PLAY=<file>` feeds it back, in a headless run or in another live
+session. The emulation is deterministic, so the replay reproduces the
+recorded session exactly: every frame and every audio sample.
+
+Both options also work without `LIVE=1`. `PAD_REC` on a headless `PAD_AUTO`
+run, for example, turns the automated taps into a file that can then be
+edited.
+
+#### File format
+
+Plain text, one line per change:
+
+```
+# pico_snesPlus host-harness input recording
+# binary: sdd1
+# rom: /home/frank/roms/SNES/Street Fighter Alpha 2 (USA).sfc
+# <frame> <hexmask> | <frame> reset [wram] | <frame> end
+300 reset
+600 1080
+608 0000
+1200 end
+```
+
+| line                 | meaning |
+| -------------------- | ------- |
+| `<frame> <hexmask>`  | The pad state from this frame on, as a hexadecimal mask in the `PAD_MASK` bit order (bit 15 to 4: B Y Select Start Up Down Left Right A X L R). `1080` is Start + A. |
+| `<frame> reset`      | Soft reset at the start of this frame (F5 or `RESET_AT`). |
+| `<frame> reset wram` | The same, with WRAM cleared (`RESET_AT` together with `RESET_WRAM`). |
+| `<frame> end`        | The recording stopped before this frame. |
+
+Lines starting with `#` are comments, and frame numbers must not decrease.
+The header names the binary and the ROM, and lists those environment
+settings that change the machine (`SRAM`, `MOUSE`, `MOUSE_CLICK`, `MSU`,
+`MSU_VOL`, `MSU_REPEAT`, `FPS`, `RTC_SPEED`), so the replay command can be
+rebuilt from the file. The recorded pad is the combined one (keyboard and
+`PAD_AUTO` together), so a replay needs neither.
+
+#### Rules for an exact replay
+
+- **The same chips.** Replay with the same binary, or at least with one
+  built with the same chips. The render path does not influence the game, so
+  a recording made with `fb1_nolut` replays exactly in `fb0_nolut` and
+  `fb0_lut`, which is how a renderer A/B is done. A binary with another chip
+  set is another machine. The harness prints a note when the `# binary:`
+  line differs from the binary being run, and runs anyway.
+- **The same machine settings.** The same ROM, a save with the same content
+  (not one that `SRAM_OUT` has overwritten since), and the same `MOUSE`,
+  `MSU`, `FPS` and `RTC_SPEED` values as listed in the header.
+- **The same core, unless that is the point.** After a change to the core a
+  replay shows what the change does with the same input, but from the first
+  frame where the change makes a difference the game can take another course.
+- `PAD_AUTO` and `RESET_AT` are ignored during a replay, up to the
+  recording's `end` line; the recording already contains their effect.
+
+Recording and replay also run the sound mixer for every frame, whether or
+not sound is output or written. The mixer is part of the emulated machine:
+the SNES sound driver reads back the voice envelope (ENVX), voice output
+(OUTX) and end-of-sample (ENDX) registers that the mixer updates, so a
+game's course can depend on whether mixing happens. A plain headless run
+(without `AUDIODBG`, `LIVE`, `PAD_REC` or `PAD_PLAY`) does not mix, as
+before. A recording replayed with `PAD_PLAY` therefore matches the session
+it was recorded in, while a plain headless run with the same `PAD_AUTO`
+settings is not guaranteed to.
+
+#### From a glitch on screen to PPM dumps
+
+1. Play with recording switched on:
+
+   ```bash
+   cd tools/host-harness
+   LIVE=1 PAD_REC=/tmp/smw.pad ./fb1_nolut smw.sfc
+   ```
+
+2. When the glitch appears, press Space to pause, step to the exact frame
+   with N, and press F12. The terminal prints the frame number and the dump,
+   for example `LIVE: frame 2417 dumped to ./live_f02417.ppm`. Press Esc to
+   quit; the recording is closed with an `end` line.
+
+3. Replay headless and dump every frame around it:
+
+   ```bash
+   mkdir -p out
+   PAD_PLAY=/tmp/smw.pad ./fb1_nolut smw.sfc out a 2430 1 2400
+   cmp live_f02417.ppm out/a_f02417.ppm      # silent: the replay is the session
+   ```
+
+4. The headless tools now apply to exactly that moment, as often as
+   needed: `TRACE_FROM=2410` for the PPU state per frame, `AUDIODBG` and
+   `DSPLOG` for the sound, `SDD1_TRACE` on an S-DD1 cart. Comparisons use
+   the same file:
+
+   ```bash
+   # strip renderer against the classic full-frame path, same input
+   PAD_PLAY=/tmp/smw.pad ./fb0_nolut smw.sfc out b 2430 1 2400
+
+   # before and after a core change
+   mkdir -p /tmp/before out/before out/after && cp fb1_nolut /tmp/before/
+   #   ... change the core, then rebuild:
+   ./build.sh
+   PAD_PLAY=/tmp/smw.pad /tmp/before/fb1_nolut smw.sfc out/before x 2430 1 2400
+   PAD_PLAY=/tmp/smw.pad ./fb1_nolut           smw.sfc out/after  x 2430 1 2400
+   diff -rq out/before out/after             # silent: the change is invisible here
+   ```
+
+   `fb1` and `fb0` dumps differ in geometry, as described under
+   [Inspecting output](#inspecting-output), so compare those two by eye or
+   crop them first.
+
+#### Continuing from a recording
+
+A live replay gives control to the keyboard at the recording's `end` line,
+and the terminal prints
+`PAD_PLAY: recording ended at frame <n>, the keyboard has control`. This is
+a way back to a point deep in a game without a save state: replay the
+session that got there, holding Tab to get there quickly if you like, and
+play on from where it stopped. To keep the continuation, record it to a new
+file. The new file contains the replayed part as well, so it replays from
+power-on to the new end:
+
+```bash
+LIVE=1 PAD_PLAY=/tmp/smw.pad PAD_REC=/tmp/smw2.pad ./fb1_nolut smw.sfc
+```
+
+In a headless replay the pad is simply released after the `end` line, and
+`PAD_AUTO` and `RESET_AT`, if set, take over from that frame.
+
+#### Writing input by hand
+
+A file can also be written by hand, as a more precise alternative to
+`PAD_AUTO`. Without an `end` line the last pad state lasts until the run
+ends:
+
+```
+# press Start on the title screen, then hold Right for two seconds
+300 1000
+308 0000
+400 0100
+520 0000
+```
+
+### Troubleshooting
+
+- **No window appears.** Live mode needs a display: `DISPLAY` or
+  `WAYLAND_DISPLAY` must be set. Under WSL2 it is provided by WSLg. SDL's
+  choice can be forced with `SDL_VIDEODRIVER=x11` or `SDL_VIDEODRIVER=wayland`;
+  the first `LIVE:` line names the driver in use.
+- **No sound.** The first `LIVE:` line shows `audio off` when no sound device
+  could be opened; the harness then paces on a timer. Under WSLg the output
+  is PulseAudio, and `SDL_AUDIODRIVER=pulseaudio` forces it if SDL picks
+  another backend. `MUTE=1` takes the sound path out entirely.
+- **Sound drops out for a few seconds while the picture carries on.** The
+  WSLg PulseAudio output occasionally stalls. The harness then keeps the
+  game at full speed on its own timer, skips the sound it cannot deliver,
+  and resumes with normal latency once the output recovers. `AUDIO_OUT` and
+  replays are not affected, because they record what was mixed, not what
+  was heard.
+- **Crackling or stutter.** The host cannot keep up with real time; the frame
+  rate in the window title shows it. `build.sh` builds with `-O2`; a build
+  with sanitizers or without optimization can be too slow for SuperFX or
+  SA-1 games. A short gap when Tab is released is expected, while the sound
+  queue fills again.
+- **Keys have no effect.** The window does not have keyboard focus; click it.
+- **A replay does not match the session.** See the
+  [rules for an exact replay](#rules-for-an-exact-replay): another chip set,
+  another ROM or save, other machine settings, or a changed core.
+- **`built without SDL2, so LIVE=1 is not available`.** SDL2 was not found
+  when the harness was built. Install `libsdl2-dev` and run `build.sh` again.
+
 ## MSU-1 (`./msu1`)
 
 The `msu1` binary is the device render flow plus MSU-1, with a stdio backend
@@ -153,9 +522,12 @@ loop-splice errors that are inaudible in a real soundtrack.
 
 ## Audio tracing (`AUDIODBG`, `DSPLOG`, `APUDUMP`)
 
-The harness mixes one video frame of audio per frame at the real-time rate,
-the way `core1_mix_task` does on the device, so sound faults reproduce here
-too — which is a great deal faster than reflashing a board to test a theory.
+The harness mixes one video frame of audio per frame at the real-time rate
+(735 samples, or 882 for a PAL game at 50 fps), the way `core1_mix_task`
+does on the device, so sound faults reproduce here too — which is a great
+deal faster than reflashing a board to test a theory. It does so whenever
+something consumes the sound: `AUDIODBG`, live mode, or input
+recording/replay.
 Like the device it mixes in 64-frame chunks (`harness_mix`): `S9xMixSamples`
 works in `soundux.c` buffers of `SOUND_BUFFER_SIZE` (1321) slots, and before
 2026-09-28 the harness asked for a whole frame (1470 slots) in one call. That
@@ -175,8 +547,9 @@ where the driver has stopped asking; the `KON` column separates them. Timer
 counters that free-run instead of sitting at zero mean the driver has stopped
 reading them, i.e. it has left its main loop.
 
-`AUDIO_OUT=<path>` alongside `AUDIODBG` writes that same mixed stream to a
-file (44.1 kHz, s16, stereo), for listening:
+`AUDIO_OUT=<path>` alongside `AUDIODBG` (or in a live, `PAD_REC` or
+`PAD_PLAY` run) writes that same mixed stream to a file (44.1 kHz, s16,
+stereo), for listening:
 
     AUDIODBG=60 AUDIO_OUT=/tmp/a.raw ./fb1_nolut game.sfc out tag 3600 99999
     aplay -f S16_LE -r 44100 -c 2 /tmp/a.raw
