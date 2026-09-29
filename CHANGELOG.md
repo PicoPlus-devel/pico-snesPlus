@@ -26,27 +26,13 @@ A few Japanese cartridges use Hudson's SPC7110 chip. They were refused at load t
 - **Momotarou Dentetsu Happy**
 - **Super Power League 4**
 
-Far East of Eden Zero also has a clock built into the cartridge, which the game uses for its day and night cycle and for events tied to the date. It is emulated, with one real limitation: the RP2350 has no clock of its own, so it can only keep time while you are actually playing — see below.
+Worth knowing:
 
-### The first start takes some patience
+- **The first start runs a self-test** built into the cartridge (`SPC7110 CHECK PROGRAM`). Press **A**, wait for it to finish and reset the game (Select + Start → Reset game), then do the same with **B**. After that the game starts normally. Do not hold a button down during the reset.
+- **The clock in Far East of Eden Zero only runs while you play.** The board has no clock of its own, so the game asks for the date and time once, and the in-game calendar falls behind while the board is off.
+- **The English translation is copied to flash first.** At 7 MB it does not fit in memory, so after you confirm it is copied into the board's flash. That takes a few minutes, once.
 
-These cartridges test themselves before they let you play. That is the cartridge doing it, not the emulator. On the first start with an empty save you get a screen headed `SPC7110 CHECK PROGRAM`:
-
-1. Press **A** and wait for it to finish, then reset the game (Select + Start → Reset game).
-2. Press **B** and wait for it to finish, then reset again.
-3. The game starts, and it will not ask again.
-
-Do not keep a button held down while it resets, or the test starts over.
-
-### The clock only runs while you play
-
-A real cartridge keeps its clock running on a battery, year in, year out. The RP2350 has nothing to do that with: no clock of its own, no battery for one, and no network to ask. So the game asks you for the date and time the first time you play — just as the original cartridge did when its battery was new — and the clock then runs only while you are playing. It stands still while the board is off, and it is stored with your save so it picks up where it left off.
-
-In practice that means the in-game calendar drifts behind the real one, by however long the board has been switched off. Anything the game ties to the date or the time of day follows that drifting clock rather than the real time. The clock is kept in the same file as your save, so deleting that file gives the cartridge a blank clock again — along with losing your progress and the result of the test above.
-
-### Big games are copied to the board first
-
-The English translation of Far East of Eden Zero is 7 MB and does not fit in the board's memory. A game that large is copied into the board's own flash memory instead. You are asked first, and a progress bar shows how far along it is; it takes a few minutes. After that the game starts straight away every time. Only one game is kept there, so picking a different oversized game copies that one instead.
+See [SPC7110](https://github.com/PicoPlus-devel/pico-snesPlus#spc7110) in the README for more.
 
 ## Street Fighter Alpha 2 and Star Ocean
 
@@ -217,7 +203,7 @@ First public release. There will be bugs. Please register an issue when you enco
 **Cartridge ROMs**
 
 - SNES ROMs (`.smc` / `.sfc`) are loaded directly from the SD card through an on-screen menu. Subdirectories are supported.
-- Games generally run at full speed (60 fps).
+- Many games run at or close to full speed (60 fps) with frame skipping enabled; this varies per game.
 
 **Expansion chips**
 
@@ -265,7 +251,7 @@ Star Ocean, Street Fighter Alpha 2 (S-DD1) and Far East of Eden Zero (SPC7110) u
 ## Known limitations
 
 - **Occasional screen artifacts and imperfect sound.** Glitches can show up, especially in scrolling levels, and audio is not always flawless. The emulator pushes the RP2350 to its limits, so performance also varies per game.
-- **Frame skipping is on by default** (every other frame; one frame in three for Super FX games). Turn it off in the settings menu to render every frame for smoother motion; many games still hold full speed, but some slow down, so try it per game.
+- **Frame skipping is on by default** (every other frame; one frame in three for Super FX games). Turning it off in the settings menu renders every frame for smoother motion; some games will hold full speed, but most slow down.
 - Demanding Super FX games such as Star Fox run below full speed.
 - The SETA (ST010 / ST011) and BS-X chips are not implemented and, unlike S-DD1 and SPC7110, are not detected — those games load but misbehave.
 - The SNES hi-res modes 5 and 6 (512 pixels wide, used by very few games — e.g. the Donkey Kong Country "Nintendo presents" intro screen) are rendered at half horizontal resolution, so fine hi-res text can look thin or ragged.

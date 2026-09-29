@@ -25,13 +25,13 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes and per-board download links.
 ## Status and limitations
 
 > [!NOTE]
-> Squeezing a SNES into a microcontroller asks a lot of the RP2350, and most of the library plays back nicely: full speed, with sound. It is not a perfect emulator, though — now and then a graphical artifact shows up in a scrolling level or the audio hiccups, and how well a game runs varies from title to title. 
+> Squeezing a SNES into a microcontroller asks a lot of the RP2350. With frame skipping enabled, many games play at or close to full speed, with sound. It is not a perfect emulator, though — now and then a graphical artifact shows up in a scrolling level or the audio hiccups, and how well a game runs varies from title to title. 
 
 Worth knowing before you start. SNES emulation is demanding for this class of hardware, so there are some real limitations:
 
 - **Most cartridge expansion chips are emulated, but not all.** DSP-1 to DSP-4, Super FX, C4, OBC1, SA-1, S-RTC, S-DD1, SPC7110 and MSU-1 games run; SETA and BS-X games do not. Super FX speed varies a lot per game. See [Expansion chips](#expansion-chips) for the full picture.
-- **Games generally run at full speed (60 fps).** Demanding Super FX titles are the main exception; see [Expansion chips](#expansion-chips).
-- **Frame skipping is still enabled by default.** Most games render every other frame; demanding Super FX titles render one frame in three. Turning it off in the settings menu renders every frame, which looks considerably smoother; many games still hold full speed, but some slow down — try it per game, and leave it on for the heaviest titles.
+- **Many games run at or close to full speed (60 fps) with frame skipping enabled, but not all.** Speed varies per game, and demanding Super FX titles run well below it; see [Expansion chips](#expansion-chips).
+- **Frame skipping is enabled by default.** Most games render every other frame; demanding Super FX titles render one frame in three. Turning it off in the settings menu renders every frame and looks smoother; some games will hold full speed, but most slow down.
 - **Battery saves are persisted** In-game saves that a cartridge writes to its battery-backed SRAM are stored on the SD card under `/SAVES/SNES/`. The save is written when you quit the game to the ROM menu (Select + Start → Quit game), so **quit to the menu before powering off** to keep your progress — pulling power mid-game loses everything since the last quit. There is no separate save-state feature. Games that use password systems are unaffected.
 - Development and testing take place primarily on the Adafruit Fruit Jam. The other supported boards need still to be more thoroughly tested.
 
@@ -57,33 +57,21 @@ Two chips, SETA (ST010/ST011) and BS-X, are not emulated. They are also not dete
 
 ### S-DD1
 
-The S-DD1 unpacks graphics while the game runs, which is costly to emulate. Results are therefore kept in a cache in PSRAM, so graphics the game has already unpacked once, such as recurring animation frames, are not unpacked again. With the frame rate display enabled, S-DD1 games show two additional values after the frame skip setting: `D`, the milliseconds per second spent emulating the chip, and `H`, the percentage of graphics data taken from the cache.
+Street Fighter Alpha 2 runs at full speed with frame skip enabled, and at about 45 to 50 fps without it. The pause while "FIGHT!" is displayed at the start of each round is part of the game.
 
-Street Fighter Alpha 2 runs at full speed with frame skip enabled. With frame skip disabled it runs at about 45 to 50 fps; the chip accounts for at most 25 ms per second of processor time during play, so the limit is the cost of drawing every frame rather than the chip. The pause while "FIGHT!" is displayed at the start of each round is part of the game: it loads the sound data for the round and the timer starts once that is complete.
+With the frame rate display enabled, S-DD1 games show two extra values: `D`, the milliseconds per second spent emulating the chip, and `H`, the percentage of graphics taken from a cache of previously unpacked data instead of being unpacked again.
 
 ### SPC7110
 
-The SPC7110 is Hudson's compression and mapping chip, used by a small number of Japanese cartridges: Far East of Eden Zero (Tengai Makyou Zero), Momotarou Dentetsu Happy and Super Power League 4. The English fan translation of Far East of Eden Zero is supported as well. Far East of Eden Zero additionally carries an RTC-4513 real-time clock, which the game uses for its day and night cycle and for events tied to the date. It is emulated, subject to the limitation described below.
+The English fan translation of Far East of Eden Zero is supported as well.
 
-**The cartridge tests itself before the game starts.** On the first start with an empty save these cartridges run their own built-in diagnostic, headed `SPC7110 CHECK PROGRAM`. It is part of the cartridge, not of the emulator, and it runs in two stages:
-
-1. Press **A** and wait for the test to report `ALL OK`, then reset the game (Select + Start → Reset game).
-2. Press **B** and wait for the second stage to report `ALL OK`, then reset again.
-3. The game starts. The result is kept in the battery save, so this is not asked again.
-
-Do not hold a button down while the game resets: the diagnostic reads a held button as a request to start over.
-
-**The clock cannot keep time while the board is off.** A real cartridge runs its clock from a battery. The RP2350 has no real-time clock, no battery to run one from, and no network to obtain the time from, so the cartridge clock advances only while a game is being played. Far East of Eden Zero therefore asks for the date and time on first play, exactly as the original cartridge did when its battery was new, and the value is stored alongside the battery save and resumed from there.
-
-The consequence is that the in-game calendar falls behind real time by however long the board has been switched off, and the game's date- and time-dependent content follows that drifting clock. The clock value is held in the battery save file together with the cartridge's own SRAM, so deleting that file presents the cartridge with an unset clock again — at the cost of the game progress and the diagnostic result stored in the same file.
-
-**Large cartridges are copied to the board's flash.** The English translation of Far East of Eden Zero is 7 MB and does not fit in the board's PSRAM alongside the emulator. A ROM that large is written into the board's own flash memory instead. The emulator asks for confirmation, then shows a progress bar while it writes; this takes a few minutes. Every later start of that game is immediate, as the copy is kept across power cycles. Only one such ROM is held at a time, so choosing a different oversized game writes it again. The Japanese original (5 MB) and the other two cartridges fit in PSRAM and are unaffected.
+- **Self-test on first start.** With an empty save, the cartridge runs its own diagnostic (`SPC7110 CHECK PROGRAM`). Press **A**, wait for `ALL OK` and reset the game (Select + Start → Reset game); then repeat with **B**. Do not hold a button down during the reset.
+- **The clock runs only during play.** The board has no battery-backed clock, so the in-game calendar of Far East of Eden Zero falls behind real time while the board is off.
+- **Large ROMs are copied to flash.** The English translation (7 MB) does not fit in PSRAM and is written to flash on first start, which takes a few minutes.
 
 ### MSU-1
 
-MSU-1 is the homebrew expansion chip behind the CD-quality soundtrack patches (Zelda: A Link to the Past, Aladdin, Chrono Trigger and many others). It is emulated: put the patched ROM, its `.msu` data track and its `-<n>.pcm` audio tracks together and the music plays.
-
-**Give each MSU-1 game its own subfolder.** A pack carries dozens of `.pcm` tracks, so dropping one in among your other ROMs makes the folder unusable. Subdirectories are supported by the menu, so a folder per game costs nothing:
+MSU-1 soundtrack patches are supported. Put the patched ROM, its `.msu` file and its `-<n>.pcm` tracks in one folder, sharing the same base name; a subfolder per game is recommended:
 
 ```
 /roms/SNES/Zelda MSU-1/alttp_msu.sfc
@@ -92,15 +80,7 @@ MSU-1 is the homebrew expansion chip behind the CD-quality soundtrack patches (Z
 /roms/SNES/Zelda MSU-1/alttp_msu-2.pcm   ...
 ```
 
-The three parts must share a base name and sit in the same folder as each other; the folder name itself does not matter.
-
-Things worth knowing:
-
-- **The `.pcm` tracks are streamed from the SD card while the game runs** — a playing track needs a steady 176 KB/s, measured at roughly 14% of one CPU core on the Fruit Jam. This is the one part of the emulator that reads the card during gameplay, so a slow or worn card can cost frame rate or make the music stutter. A decent card is the fix. If the card cannot keep up, an `MSU1:` line appears on the serial console reporting the read cost and the underrun count; it stays quiet otherwise. Build with `-DMSU1_VERBOSE=ON` to get that line every second regardless, which is the way to measure what a particular card can do.
-- **Packs with video (the "Deluxe" ones) are much heavier.** Zelda's intro FMV streams its video through the data track as well as the music — around 830 KB/s in total, which is more than half of what the SD card can deliver, and it drops that sequence to about 40 fps. The music itself stays clean; ordinary music-only packs cost only the 176 KB/s above.
-- **Nothing is allocated and no card access happens unless a pack is present.** ROMs without one behave exactly as before.
-- MSU-1 packs are large (often several GB), so plan card space accordingly.
-- MSU-1 can be compiled out entirely with `-DENABLE_MSU1=OFF`.
+The music is streamed from the SD card during play, so a slow card can cause stuttering music or a lower frame rate. Packs with video (the "Deluxe" ones) are heavier; Zelda's intro drops to about 40 fps.
 
 ### A note on Super FX speed
 
@@ -377,6 +357,47 @@ git submodule update --init --recursive
 ```
 
 Run `./bld.sh -h` for all options. The resulting `.uf2` file is placed in the `releases/` folder; flash it by holding BOOTSEL while connecting the board and copying the file onto the USB drive that appears.
+
+### Build options
+
+The CMake options below are passed through `EXTRA_CMAKE_ARGS`, for example:
+
+```bash
+EXTRA_CMAKE_ARGS="-DMSU1_VERBOSE=ON -DAUDIO_WATCHDOG=ON" ./bld.sh -c8
+```
+
+Diagnostic output is written to the serial console (UART).
+
+**Features**, on by default:
+
+| Option | Effect |
+| --- | --- |
+| `ENABLE_MSU1` | MSU-1 soundtrack support. |
+| `ENABLE_SPC7110` | SPC7110 support. When off, these games are refused at load time. |
+| `ENABLE_SDD1` | S-DD1 support. When off, these games are refused at load time. |
+| `SDD1_CACHE` | Cache for unpacked S-DD1 graphics. Turn off only to compare; see the `D` and `H` values under [S-DD1](#s-dd1). |
+| `ENABLE_USB_MSC` | [USB drive mode](#usb-drive-mode). |
+
+**Diagnostics**, off by default and intended for testing only:
+
+| Option | Effect |
+| --- | --- |
+| `MSU1_VERBOSE` | Prints the `MSU1:` line (SD read cost, buffer level, underruns) every second while a track plays. Without it the line appears only when the card cannot keep up. Use it to find out whether an SD card is fast enough. |
+| `AUDIO_WATCHDOG` | When the sound has been silent for three seconds, prints the state of the sound processor that explains why. |
+| `PROFILE_BUCKETS` | Adds a per-frame time breakdown to the serial output, and every five seconds switches sound emulation and frame pacing off in turn to measure their cost. Sound drops out while it runs. |
+| `SPC7110_FREEZE_RTC` | Stops the Far East of Eden Zero cartridge clock. |
+| `ROMFLASH_FORCE_REWRITE` | Copies a large ROM to flash on every start, to test the progress bar. Each start then takes about 45 seconds. |
+
+**Comparison switches**, used during development to measure the effect of an optimisation. The defaults are the tested configuration:
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `RENDER_TO_FB` | ON | Renders in small SRAM strips straight into the display buffer. Off uses the older full-frame path. |
+| `BLIT_ON_CORE1` | ON | With `RENDER_TO_FB` off only: copies each frame to the display buffer on the second core. |
+| `MIX_ON_CORE1` | ON | Mixes audio on the second core. |
+| `PACE_SOFT_60FPS` | ON | Paces frames by a timer instead of the display's vertical sync. |
+| `FILLRAM_IN_PSRAM` | OFF | Forces the SNES register mirror into PSRAM even where it fits in SRAM. |
+| `SUPERFX_IN_SRAM` | OFF | Runs the Super FX interpreter from SRAM. Measured no net gain. |
 
 ### Host-side render test harness
 
