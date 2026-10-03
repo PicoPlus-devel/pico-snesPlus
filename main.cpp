@@ -97,6 +97,14 @@ extern "C" uint16_t *s9x_port_fb_window;
  * [block_start, block_end] row range (strip physical row 0 == block_start). */
 extern "C" void (*s9x_port_strip_top_hook)(uint16_t *strip, int stride,
                                            int block_start, int block_end);
+/* Tear guard (port_glue.cpp): scan-out beam position and per-frame tracking
+ * of where the strips landed relative to the refreshes, used by paceFrame. */
+extern "C" void     s9x_port_beam_install(void);
+extern "C" uint32_t s9x_port_beam_pos(void);
+extern "C" void     s9x_port_tear_frame_begin(void);
+extern "C" bool     s9x_port_tear_frame_end(int32_t *psi_mid, bool *torn);
+extern "C" void     s9x_port_tear_stats(uint32_t *frames, uint32_t *torn, uint32_t *waits,
+                                        uint32_t *wait_us, uint32_t *span_max);
 #else
 /* port glue — snes9x's render target, 256-wide RGB555 in PSRAM. */
 extern uint16_t *g_snes_private_screen;
@@ -563,12 +571,57 @@ static void __not_in_flash_func(pump_audio)(void)
  * each frame to its own tick, forcing 3 SNES frames into 4 vsync
  * intervals = 45 fps even when the emulator could produce 60. Soft
  * pacing lets the emulator free-run at its true rate; may introduce
- * tearing on the blit if it lands mid-scan. */
+ * tearing on the blit if it lands mid-scan.
+ *
+ * PACE_VSYNC_PHASE (strip renderer only) supersedes both for NTSC. It paces
+ * whole frameskip groups (one rendered frame plus the skipped ones after
+ * it) instead of single frames, so it has the soft pacer's throughput, but
+ * starts every group on the display's refresh grid: a group of N frames
+ * gets exactly N refreshes. Free-running against the display is what let
+ * the strip copy-out and the beam leapfrog each other into stair-stepped
+ * tears; on the grid, pace_note_frame() can then move the start phase until
+ * a rendered frame's strips all reach the screen in the same refresh. A
+ * group that overruns starts late, without waiting, as with the soft pacer.
+ * groupEnd: the next frame starts a new group (it will be rendered). */
 static absolute_time_t pal_next_frame;
-#if PACE_SOFT_60FPS
+#if PACE_SOFT_60FPS && !PACE_VSYNC_PHASE
 static absolute_time_t soft_next_frame;
 #endif
-static void paceFrame(bool init)
+#if PACE_VSYNC_PHASE
+static constexpr int32_t PACE_LINES = MODE_V_TOTAL_LINES;  /* output lines per refresh */
+static uint32_t pace_slot;      /* beam position (s9x_port_beam_pos) the next group starts at */
+static uint32_t pace_frames;    /* frames run since the current group started */
+static int32_t  pace_nudge;     /* phase correction, lines, applied at the next group start */
+static bool     pace_on_time;   /* the current group started on its slot, not late */
+static bool     pace_have_frame;/* the current group's rendered frame reported below */
+static int32_t  pace_last_m;    /* ... its psi midpoint, mod PACE_LINES */
+static bool     pace_last_torn; /* ... and whether it reached the screen torn */
+static uint32_t pace_bad_run;   /* consecutive groups that started late AND tore */
+static uint32_t pace_since_jump;/* groups since the last phase jump (saturating) */
+
+/* A rendered frame's tear report (s9x_port_tear_frame_end). Steers the
+ * group start phase so the frame's psi midpoint sits in the middle of a
+ * refresh interval, as far as possible from both refreshes that could catch
+ * a strip. A quarter of the error per frame, capped at ~1 ms, so a game's
+ * changing render load moves the phase smoothly. Only from groups that
+ * started on their slot: a late group's start was not the phase the pacer
+ * asked for, and steering on it winds the slot away from reality. */
+static void pace_note_frame(int32_t psi_mid, bool torn)
+{
+    int32_t m = psi_mid % PACE_LINES;
+    if (m < 0) m += PACE_LINES;
+    pace_last_m     = m;
+    pace_last_torn  = torn;
+    pace_have_frame = true;
+    if (!pace_on_time)
+        return;
+    int32_t step = (PACE_LINES / 2 - m) / 4;
+    if (step > 32) step = 32;
+    if (step < -32) step = -32;
+    pace_nudge += step;
+}
+#endif
+static void paceFrame(bool init, bool groupEnd = true)
 {
     if (Settings.PAL) {
         if (init) {
@@ -582,7 +635,57 @@ static void paceFrame(bool init)
             pal_next_frame = make_timeout_time_us(20000);
         }
     } else {
-#if PACE_SOFT_60FPS
+#if PACE_VSYNC_PHASE
+        if (init) {
+            pace_slot       = s9x_port_beam_pos();
+            pace_frames     = 0;
+            pace_nudge      = 0;
+            pace_on_time    = false;
+            pace_have_frame = false;
+            pace_bad_run    = 0;
+            pace_since_jump = 0;
+            return;
+        }
+        pace_frames++;
+        if (!groupEnd)
+            return;   /* skipped frames run back to back inside their group */
+        pace_slot  += pace_frames * PACE_LINES + pace_nudge;
+        pace_frames = 0;
+        pace_nudge  = 0;
+        if (pace_since_jump < 0xFFFF)
+            pace_since_jump++;
+        int32_t late = (int32_t)(s9x_port_beam_pos() - pace_slot);
+        bool on_time = late < 0;
+        pace_bad_run = (!on_time && pace_have_frame && pace_last_torn) ? pace_bad_run + 1 : 0;
+        if (on_time) {
+            while ((int32_t)(s9x_port_beam_pos() - pace_slot) < 0)
+                tight_loop_contents();
+        } else if (late >= PACE_LINES) {
+            /* A refresh or more behind (a heavy scene): give up the missed
+             * refreshes rather than racing to catch up, but keep the phase.
+             * A smaller lateness keeps the slot, so the next groups' slack
+             * absorbs it. */
+            pace_slot += (uint32_t)(late / PACE_LINES) * PACE_LINES;
+        }
+        if (pace_bad_run >= 4 && pace_since_jump >= 60) {
+            /* Stuck: with almost no slack per group a late start can hold
+             * itself in place (the torn frame makes strips wait for the
+             * beam, the waits eat the slack), and steering cannot move a
+             * start that is already late any earlier. Jump forward to the
+             * phase the last frame asked for instead: one delay of under a
+             * refresh. At most every ~60 groups (2 s with frameskip), which
+             * bounds the cost when the scene simply cannot hold 60 fps. */
+            pace_slot = s9x_port_beam_pos() +
+                        (uint32_t)((PACE_LINES / 2 - pace_last_m + PACE_LINES) % PACE_LINES);
+            while ((int32_t)(s9x_port_beam_pos() - pace_slot) < 0)
+                tight_loop_contents();
+            on_time         = true;
+            pace_bad_run    = 0;
+            pace_since_jump = 0;
+        }
+        pace_on_time    = on_time;
+        pace_have_frame = false;
+#elif PACE_SOFT_60FPS
         if (init) {
             soft_next_frame = make_timeout_time_us(16716);
             return;
@@ -1364,7 +1467,24 @@ static void run_emulator(void)
         bool rendered_this_frame = IPPU.RenderThisFrame;
         uint32_t t2 = time_us_32();
 #endif
+#if HSTX && RENDER_TO_FB
+        const bool rendering = IPPU.RenderThisFrame;
+        if (rendering)
+            s9x_port_tear_frame_begin();
+#endif
         S9xMainLoop();
+#if HSTX && RENDER_TO_FB
+        if (rendering) {
+            int32_t psi_mid;
+            bool    torn;
+            if (s9x_port_tear_frame_end(&psi_mid, &torn)) {
+#if PACE_VSYNC_PHASE
+                if (!Settings.PAL)
+                    pace_note_frame(psi_mid, torn);
+#endif
+            }
+        }
+#endif
 #if PROFILE_BUCKETS
         uint32_t t3 = time_us_32();
         {
@@ -1439,7 +1559,7 @@ static void run_emulator(void)
         uint32_t t5 = time_us_32(); prof_us_pump += (t5 - t4);
         if (!g_prof_bypass_pace)
 #endif
-        paceFrame(false);
+        paceFrame(false, skipFrames == 0);
 #if PROFILE_BUCKETS
         uint32_t t6 = time_us_32(); prof_us_pace += (t6 - t5);
 #endif
@@ -1520,6 +1640,28 @@ static void run_emulator(void)
                 }
 #endif
             }
+#if TEAR_STATS && HSTX && RENDER_TO_FB
+            {
+                /* Tear guard health: rendered frames, how many reached the
+                 * screen torn, strips that waited for the beam (and for how
+                 * long in total), the widest psi range (> one refresh, i.e.
+                 * the line count, cannot be placed tear-free) and the start
+                 * phase the pacer is holding, in lines after the vsync tick. */
+                uint32_t tf, tt, tw, twu, tspan;
+                s9x_port_tear_stats(&tf, &tt, &tw, &twu, &tspan);
+                long phase = -1;
+#if PACE_VSYNC_PHASE
+                if (!Settings.PAL) {
+                    int32_t p = (int32_t)(pace_slot - video_frame_count * (uint32_t)PACE_LINES)
+                                % PACE_LINES;
+                    phase = p < 0 ? p + PACE_LINES : p;
+                }
+#endif
+                printf("tear: frames=%lu torn=%lu waits=%lu wait=%luus span=%lu phase=%ld\n",
+                       (unsigned long)tf, (unsigned long)tt, (unsigned long)tw,
+                       (unsigned long)twu, (unsigned long)tspan, phase);
+            }
+#endif
 #if PROFILE_BUCKETS
             uint32_t d  = delta ? delta : 1;
             uint32_t dr = prof_frames_r ? prof_frames_r : 1;
@@ -1630,6 +1772,10 @@ int main()
     isFatalError = !Frens::initAll(selectedRom, CPUFreqKHz, 0, 0,
                                    AUDIOBUFFERSIZE, false, true);
     Frens::dumpHeapStats("after-initAll");
+#if HSTX && RENDER_TO_FB
+    /* Start tracking the scan-out beam for the strip tear guard. */
+    s9x_port_beam_install();
+#endif
 
 #if HSTX
     /* Override the 44.1 kHz default that hstx_init() in pico_shared

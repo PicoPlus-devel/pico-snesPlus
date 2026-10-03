@@ -416,6 +416,26 @@ if(PACE_SOFT_60FPS)
     message(STATUS "PACE_SOFT_60FPS enabled — free-running 60 Hz pacer (may tear)")
 endif()
 
+# Strip renderer only: pace NTSC frameskip groups (a rendered frame plus the
+# skipped frames after it) on the display's refresh grid, and steer the
+# group start phase so each rendered frame's strips reach the screen in one
+# refresh. Supersedes PACE_SOFT_60FPS for NTSC; keeps its throughput because
+# only group starts are aligned. Without it the strip tear guard still caps
+# tearing at one seam per refresh. See paceFrame in main.cpp.
+option(PACE_VSYNC_PHASE "Vsync-phase pacing of frameskip groups (strip renderer)" ON)
+if(PACE_VSYNC_PHASE AND RENDER_TO_FB)
+    target_compile_definitions(${projectname} PRIVATE PACE_VSYNC_PHASE=1)
+    message(STATUS "PACE_VSYNC_PHASE enabled — frameskip groups paced on the refresh grid")
+endif()
+
+# Once-per-second UART line with the tear guard's counters (rendered and
+# torn frames, beam waits, start phase). Diagnostic, off in releases.
+option(TEAR_STATS "Print tear guard statistics once per second" OFF)
+if(TEAR_STATS)
+    target_compile_definitions(${projectname} PRIVATE TEAR_STATS=1)
+    message(STATUS "TEAR_STATS enabled — UART tear: line once per second")
+endif()
+
 # Run the GFX.Screen (PSRAM) -> HSTX framebuffer (SRAM) blit on core1's
 # idle background-task hook instead of core0 (~2.5 ms per rendered frame
 # given back to emulation). See core1_blit_task in main.cpp. Only relevant

@@ -385,6 +385,7 @@ Diagnostic output is written to the serial console (UART).
 | `MSU1_VERBOSE` | Prints the `MSU1:` line (SD read cost, buffer level, underruns) every second while a track plays. Without it the line appears only when the card cannot keep up. Use it to find out whether an SD card is fast enough. |
 | `AUDIO_WATCHDOG` | When the sound has been silent for three seconds, prints the state of the sound processor that explains why. |
 | `PROFILE_BUCKETS` | Adds a per-frame time breakdown to the serial output, and every five seconds switches sound emulation and frame pacing off in turn to measure their cost. Sound drops out while it runs. |
+| `TEAR_STATS` | Prints a `tear:` line every second: frames drawn, frames that reached the screen torn, and how long drawing waited for the display. |
 | `SPC7110_FREEZE_RTC` | Stops the Far East of Eden Zero cartridge clock. |
 | `ROMFLASH_FORCE_REWRITE` | Copies a large ROM to flash on every start, to test the progress bar. Each start then takes about 45 seconds. |
 
@@ -395,7 +396,8 @@ Diagnostic output is written to the serial console (UART).
 | `RENDER_TO_FB` | ON | Renders in small SRAM strips straight into the display buffer. Off uses the older full-frame path. |
 | `BLIT_ON_CORE1` | ON | With `RENDER_TO_FB` off only: copies each frame to the display buffer on the second core. |
 | `MIX_ON_CORE1` | ON | Mixes audio on the second core. |
-| `PACE_SOFT_60FPS` | ON | Paces frames by a timer instead of the display's vertical sync. |
+| `PACE_VSYNC_PHASE` | ON | With `RENDER_TO_FB` only: starts each drawn frame, together with the skipped frames after it, in step with the display's refresh, which prevents tearing. Takes the place of `PACE_SOFT_60FPS` for NTSC games. |
+| `PACE_SOFT_60FPS` | ON | With `PACE_VSYNC_PHASE` off: paces NTSC frames by a timer instead of the display's vertical sync. |
 | `FILLRAM_IN_PSRAM` | OFF | Forces the SNES register mirror into PSRAM even where it fits in SRAM. |
 | `SUPERFX_IN_SRAM` | OFF | Runs the Super FX interpreter from SRAM. Measured no net gain. |
 

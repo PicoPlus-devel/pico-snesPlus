@@ -47,6 +47,7 @@ These two games use Nintendo's S-DD1 chip, which unpacks their graphics while th
 - **Corrupt graphics in the English translation** of Far East of Eden Zero, where backgrounds turned into coloured noise.
 - **Super Power League 4** kept restarting its self-test instead of starting the game.
 - **A button used in the menu no longer reaches the game.** Choosing an item in the in-game menu could pass that same button press straight through to the game.
+- **No more tearing in scrolling games.** Side-scrollers such as Super Mario World and Donkey Kong Country could show jagged, stair-stepped edges and cut-up sprites while the screen scrolled. The picture is now updated in step with the display.
 
 # v0.6
 
