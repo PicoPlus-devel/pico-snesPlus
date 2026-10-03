@@ -54,6 +54,7 @@ These two games use Nintendo's S-DD1 chip, which unpacks their graphics while th
 - **The controller test screen is left by holding Select + Up** instead of Select + Start, which some 8BitDo wireless controllers keep for themselves.
 - **SA-1 games skip more frames.** With frame skipping on, games such as Super Mario RPG and Kirby Super Star now draw one frame in three, as Super FX games do, instead of every other frame.
 - **The frame rate display shows two more values:** `R`, how often the picture has had to resynchronise with the display since start-up, and `F`, how many frames are skipped after each one drawn.
+- **All settings return to their defaults once** after updating to this version.
 - **New setting: Video Clock Fix** (Pimoroni Pico Plus 2, PicoNES PCB and Murmulator M2). Turn it on if your TV or monitor shows small dots or lines in the picture. A USB controller can then no longer be used; use a NES, SNES or Wii controller instead. See [Video Clock Fix](https://github.com/PicoPlus-devel/pico-snesPlus#video-clock-fix) in the README.
 
 # v0.6
