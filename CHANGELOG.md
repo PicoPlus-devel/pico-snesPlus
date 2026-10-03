@@ -1,6 +1,6 @@
 # CHANGELOG
 
-**v0.7** adds the **SPC7110** cartridges — Far East of Eden Zero, Momotarou Dentetsu Happy and Super Power League 4 — including the clock in the Far East of Eden Zero cartridge, and the **S-DD1** cartridges, Street Fighter Alpha 2 and Star Ocean.
+**v0.7** fixes **tearing in scrolling games** and adds the **SPC7110** (Far East of Eden Zero, Momotarou Dentetsu Happy, Super Power League 4) and **S-DD1** (Street Fighter Alpha 2, Star Ocean) cartridges.
 
 # General Info
 
@@ -43,11 +43,8 @@ These two games use Nintendo's S-DD1 chip, which unpacks their graphics while th
 
 ## Fixes
 
-- **The music no longer stops in Far East of Eden Zero.** It used to fade away after a few minutes and never come back, in both versions.
-- **Corrupt graphics in the English translation** of Far East of Eden Zero, where backgrounds turned into coloured noise.
-- **Super Power League 4** kept restarting its self-test instead of starting the game.
-- **A button used in the menu no longer reaches the game.** Choosing an item in the in-game menu could pass that same button press straight through to the game.
 - **No more tearing in scrolling games.** Side-scrollers such as Super Mario World and Donkey Kong Country could show jagged, stair-stepped edges and cut-up sprites while the screen scrolled. The picture is now updated in step with the display.
+- **A button used in the menu no longer reaches the game.** Choosing an item in the in-game menu could pass that same button press straight through to the game.
 
 # v0.6
 
