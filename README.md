@@ -31,7 +31,7 @@ Worth knowing before you start. SNES emulation is demanding for this class of ha
 
 - **Most cartridge expansion chips are emulated, but not all.** DSP-1 to DSP-4, Super FX, C4, OBC1, SA-1, S-RTC, S-DD1, SPC7110 and MSU-1 games run; SETA and BS-X games do not. Super FX speed varies a lot per game. See [Expansion chips](#expansion-chips) for the full picture.
 - **Many games run at or close to full speed (60 fps) with frame skipping enabled, but not all.** Speed varies per game, and demanding Super FX titles run well below it; see [Expansion chips](#expansion-chips).
-- **Frame skipping is enabled by default.** Most games render every other frame; demanding Super FX titles render one frame in three. Turning it off in the settings menu renders every frame and looks smoother; some games will hold full speed, but most slow down.
+- **Frame skipping is enabled by default.** Most games render every other frame; Super FX and SA-1 games render one frame in three. Turning it off in the settings menu renders every frame and looks smoother; some games will hold full speed, but most slow down.
 - **Battery saves are persisted** In-game saves that a cartridge writes to its battery-backed SRAM are stored on the SD card under `/SAVES/SNES/`. The save is written when you quit the game to the ROM menu (Select + Start → Quit game), so **quit to the menu before powering off** to keep your progress — pulling power mid-game loses everything since the last quit. There is no separate save-state feature. Games that use password systems are unaffected.
 - Development and testing take place primarily on the Adafruit Fruit Jam. The other supported boards need still to be more thoroughly tested.
 
@@ -67,7 +67,7 @@ The English fan translation of Far East of Eden Zero is supported as well.
 
 - **Self-test on first start.** With an empty save, the cartridge runs its own diagnostic (`SPC7110 CHECK PROGRAM`). Press **A**, wait for `ALL OK` and reset the game (Select + Start → Reset game); then repeat with **B**. Do not hold a button down during the reset.
 - **The clock runs only during play.** The board has no battery-backed clock, so the in-game calendar of Far East of Eden Zero falls behind real time while the board is off.
-- **Large ROMs are copied to flash.** The English translation (7 MB) does not fit in PSRAM and is written to flash on first start, which takes a few minutes.
+- **Large ROMs are copied to flash.** The English translation (7 MB) does not fit in PSRAM and is written to flash on first start, which takes a few minutes. This needs a board with 16 MB of flash, such as the Adafruit Fruit Jam or the Pimoroni Pico Plus 2. On a board with less, such as the Adafruit Feather RP2350 (8 MB), the game is refused with "ROM too large". On the Murmulator M2 it depends on the board fitted.
 
 ### MSU-1
 
@@ -256,7 +256,7 @@ Every supported controller delivers the full SNES button set (B, Y, Select, Star
 
 Two players: a second USB pad is player 2. When a USB pad is connected, the GPIO NES/SNES pad and the Wii Classic pad act as player 2; without one they are player 1.
 
-The settings menu contains a controller test screen that shows which button the emulator receives for each press. For a pad on the GPIO port it also reports which kind of pad it detected (NES or SNES) and names the buttons accordingly, since the two shift out the same bits with different meanings.
+The settings menu contains a controller test screen that shows which button the emulator receives for each press. For a pad on the GPIO port it also reports which kind of pad it detected (NES or SNES) and names the buttons accordingly, since the two shift out the same bits with different meanings. Hold **Select + Up** to leave it.
 
 In the menu itself, a SNES pad on the GPIO port is read by label like a USB or Wii Classic pad: **A** chooses, **B** goes back and **X** opens the [recently played list](#recently-played-games). A NES pad keeps the NES order.
 
@@ -306,6 +306,8 @@ In the menu:
 In game:
 
 - **Select + Start** opens the settings menu. From there you can quit to the ROM menu (which writes the cartridge's battery save to the SD card), reset the game, or change settings: screen mode (8:7 or 1:1, with or without scanlines), frame rate display, audio on/off, frame skip, rapid-fire on A/B, font colors, the controller test screen, and board-specific options such as speaker volume and the NeoPixel VU meter on the Fruit Jam. Settings are remembered across restarts.
+
+The **frame rate display** shows three values in the top-left corner: the number of frames emulated in the last second (60 is full speed), `R`, how often the picture has had to resynchronise with the display since start-up, and `F`, how many frames are skipped after each one drawn. S-DD1 games add two more; see [S-DD1](#s-dd1).
 
 Two entries are offered only when the settings menu is opened from the ROM browser, not from a running game: the [recently played list](#recently-played-games) and [USB drive mode](#usb-drive-mode).
 
@@ -416,7 +418,7 @@ The bundled snes9x core also compiles natively on Linux. [tools/host-harness](to
 
 ## Use of AI
 
-The port of the Snes9x core to the RP2350, the coprocessor work (Super FX, DSP, SA-1, C4, OBC1, S-RTC, SPC7110), and the performance and stability tuning were developed with the help of [Anthropic Claude](https://www.anthropic.com/claude) (Opus 4.7, Opus 4.8 and Fable).
+The port of the Snes9x core to the RP2350, the coprocessor work (Super FX, DSP, SA-1, C4, OBC1, S-RTC, S-DD1, SPC7110), and the performance and stability tuning were developed with the help of [Anthropic Claude](https://www.anthropic.com/claude) (Opus 4.7, Opus 4.8, Opus 5, Opus 5.5 and Fable).
 
 ## License
 

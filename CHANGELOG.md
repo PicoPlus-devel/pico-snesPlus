@@ -30,7 +30,7 @@ Worth knowing:
 
 - **The first start runs a self-test** built into the cartridge (`SPC7110 CHECK PROGRAM`). Press **A**, wait for it to finish and reset the game (Select + Start → Reset game), then do the same with **B**. After that the game starts normally. Do not hold a button down during the reset.
 - **The clock in Far East of Eden Zero only runs while you play.** The board has no clock of its own, so the game asks for the date and time once, and the in-game calendar falls behind while the board is off.
-- **The English translation is copied to flash first.** At 7 MB it does not fit in memory, so after you confirm it is copied into the board's flash. That takes a few minutes, once.
+- **The English translation is copied to flash first.** At 7 MB it does not fit in memory, so after you confirm it is copied into the board's flash. That takes a few minutes, once. This needs a board with 16 MB of flash, such as the Adafruit Fruit Jam or the Pimoroni Pico Plus 2; the Adafruit Feather RP2350 has only 8 MB and cannot run it. On the Murmulator M2 it depends on the board fitted.
 
 See [SPC7110](https://github.com/PicoPlus-devel/pico-snesPlus#spc7110) in the README for more.
 
@@ -45,6 +45,13 @@ These two games use Nintendo's S-DD1 chip, which unpacks their graphics while th
 
 - **No more tearing in scrolling games.** Side-scrollers such as Super Mario World and Donkey Kong Country could show jagged, stair-stepped edges and cut-up sprites while the screen scrolled. The picture is now updated in step with the display.
 - **A button used in the menu no longer reaches the game.** Choosing an item in the in-game menu could pass that same button press straight through to the game.
+- **B works straight away on the AliExpress SNES USB controller.** It used to do nothing until Y had been pressed once.
+
+## Other changes
+
+- **The controller test screen is left by holding Select + Up** instead of Select + Start, which some 8BitDo wireless controllers keep for themselves.
+- **SA-1 games skip more frames.** With frame skipping on, games such as Super Mario RPG and Kirby Super Star now draw one frame in three, as Super FX games do, instead of every other frame.
+- **The frame rate display shows two more values:** `R`, how often the picture has had to resynchronise with the display since start-up, and `F`, how many frames are skipped after each one drawn.
 
 # v0.6
 
