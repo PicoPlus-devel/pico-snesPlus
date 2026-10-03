@@ -46,12 +46,15 @@ These two games use Nintendo's S-DD1 chip, which unpacks their graphics while th
 - **No more tearing in scrolling games.** Side-scrollers such as Super Mario World and Donkey Kong Country could show jagged, stair-stepped edges and cut-up sprites while the screen scrolled. The picture is now updated in step with the display.
 - **A button used in the menu no longer reaches the game.** Choosing an item in the in-game menu could pass that same button press straight through to the game.
 - **B works straight away on the AliExpress SNES USB controller.** It used to do nothing until Y had been pressed once.
+- **No more dots in the picture on the Adafruit Fruit Jam and Feather RP2350.** Some TVs and monitors showed small dots or short dotted lines.
+- **The Overclock setting always matches the speed the board runs at.** It could show ON while the board ran at the normal speed, or OFF while the board was still overclocked. On the Murmulator M2 and Feather RP2350, saving any setting no longer restarts the board.
 
 ## Other changes
 
 - **The controller test screen is left by holding Select + Up** instead of Select + Start, which some 8BitDo wireless controllers keep for themselves.
 - **SA-1 games skip more frames.** With frame skipping on, games such as Super Mario RPG and Kirby Super Star now draw one frame in three, as Super FX games do, instead of every other frame.
 - **The frame rate display shows two more values:** `R`, how often the picture has had to resynchronise with the display since start-up, and `F`, how many frames are skipped after each one drawn.
+- **New setting: Video Clock Fix** (Pimoroni Pico Plus 2, PicoNES PCB and Murmulator M2). Turn it on if your TV or monitor shows small dots or lines in the picture. A USB controller can then no longer be used; use a NES, SNES or Wii controller instead. See [Video Clock Fix](https://github.com/PicoPlus-devel/pico-snesPlus#video-clock-fix) in the README.
 
 # v0.6
 

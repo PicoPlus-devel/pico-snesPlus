@@ -230,6 +230,7 @@ int8_t g_settings_visibility_snes[MOPT_COUNT] = {
     [MOPT_MENU_OVERSCAN]            = 0,                  /* Overscan in menu (menu.cpp force-shows this below the menu colors) */
     [MOPT_GENESIS_PAD]              = 0,                  /* Genesis only */
     [MOPT_NES_PALETTE]              = 0,                  /* NES only */
+    [MOPT_HSTX_CLOCK_FIX]           = HSTX && !CFG_TUH_RPI_PIO_USB, /* Video Clock Fix (PIO-USB builds always have it, see SNES_OVERCLOCK_FIX) */
 };
 
 static const uint8_t g_available_screen_modes_snes[] = {
@@ -1743,6 +1744,11 @@ int main()
         CPUFreqKHz = flashParams->cpuFreqKHz;
         voltage = flashParams->voltage;
     }
+#else
+    // No overclock here, but the menu still compares the live clock with these
+    // limits whenever settings are saved. Left at the pico_shared defaults
+    // (252 MHz) that check rewrote FlashParams and rebooted on every save.
+    Frens::setOverclockLimits(EMULATOR_CLOCKFREQ_KHZ, EMULATOR_CLOCKFREQ_KHZ, voltage, voltage);
 #endif   
     Frens::setClocksAndStartStdio(CPUFreqKHz, voltage);
     Frens::dumpHeapStats("startup");
