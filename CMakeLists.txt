@@ -44,27 +44,26 @@ if(NOT PSRAM_CS_PIN OR PSRAM_CS_PIN EQUAL 0)
 endif()
 
 # --- Flash size --------------------------------------------------------------
-# The Fruit Jam carries 16 MB, but the tinyusb BSP board header shipped with
-# older SDKs declares 8 MB:
-#   lib/tinyusb/hw/bsp/rp2040/boards/adafruit_fruit_jam/adafruit_fruit_jam.h
-#     // pico_cmake_set_default PICO_FLASH_SIZE_BYTES = (8 * 1024 * 1024)
-#     #ifndef PICO_FLASH_SIZE_BYTES
-#     #define PICO_FLASH_SIZE_BYTES (8 * 1024 * 1024)
-# family_support.cmake pulls that header in, so it wins over the SDK's own
-# board header and both the generated pico_flash_region.ld and the C macro come
-# out at 8 MB. hardware_flash's flash_range_erase/_program assert
-# `flash_offs + count <= PICO_FLASH_SIZE_BYTES`, so every romflash.cpp write at
-# 0x10800000 hard-asserts on the first erase.
+# romflash.cpp copies oversized ROMs to the top 8 MB of a 16 MB flash
+# (0x10800000). hardware_flash's flash_range_erase/_program hard-assert
+# `flash_offs + count <= PICO_FLASH_SIZE_BYTES`, and the board headers declare
+# less than the chips the supported boards actually carry: pico2.h says 4 MB
+# for the 16 MB Pimoroni Pico Plus 2 (HW_CONFIG 2), and the tinyusb BSP header
+# older SDKs pull in for the Fruit Jam (family_support.cmake) says 8 MB for a
+# 16 MB part. With either value the first erase hard-faults.
 #
-# Both the header guard and the SDK's cmake default only apply when the value
-# is unset, so setting it here wins in both places -- and stays correct (same
-# value) once the SDK is updated and the BSP header says 16 MB. Scoped to the
-# board so no smaller-flash config is affected.
-if(PICO_BOARD STREQUAL "adafruit_fruit_jam")
-    set(PICO_FLASH_SIZE_BYTES 0x1000000)
-    add_definitions(-DPICO_FLASH_SIZE_BYTES=0x1000000)
-    message(STATUS "PICO_FLASH_SIZE_BYTES forced to 16 MB (stale tinyusb BSP header declares 8 MB)")
-endif()
+# So the build always claims the RP2350's full 16 MB CS0 window, on every
+# config, and the runtime decides: romflash.cpp's region_present() reads the
+# real capacity off the chip (JEDEC id) and refuses the copy on a board with
+# less, e.g. the 8 MB Feather RP2350 (HW_CONFIG 14). Besides those asserts the
+# value only sizes the linker's FLASH region; the image is far smaller.
+#
+# Both the board headers' #ifndef guard and the SDK's cmake default only apply
+# when the value is unset, so setting it here wins in both places. Bootloader
+# builds get the same value from FRENS_FLASH_TOTAL (pico_shared/BootPartition.cmake).
+set(PICO_FLASH_SIZE_BYTES 0x1000000)
+add_definitions(-DPICO_FLASH_SIZE_BYTES=0x1000000)
+message(STATUS "PICO_FLASH_SIZE_BYTES forced to 16 MB; romflash checks the real flash size at run time")
 
 add_definitions(-DNDEBUG)
 

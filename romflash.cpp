@@ -66,9 +66,10 @@ static const RomFlashRecord *record(void)
  * and an old tinyusb BSP header declares the Fruit Jam as 8 MB (CMakeLists.txt
  * overrides it, but the override is one stale include away from being wrong
  * again). storage_get_flash_capacity() reads the JEDEC id off the part itself,
- * so it is true regardless of what the build thinks. The other supported
- * boards carry less flash and would happily program addresses that alias back
- * over the app, so this must stay a check and not an assumption. */
+ * so it is true regardless of what the build thinks. The build claims 16 MB on
+ * every config, but not every supported board carries it (the Feather RP2350
+ * has 8 MB), and a smaller chip would happily program addresses that alias
+ * back over the app, so this must stay a check and not an assumption. */
 static bool region_present(void)
 {
     uint32_t capacity = Frens::storage_get_flash_capacity();
