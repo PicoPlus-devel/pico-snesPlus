@@ -1687,7 +1687,7 @@ uint8_t S9xGetCPU(uint16_t Address)
       }
 }
 
-static void CommonPPUReset()
+S9X_COLD_INIT static void CommonPPUReset()
 {
    uint8_t B;
    int32_t c;
@@ -1827,7 +1827,7 @@ static void CommonPPUReset()
    }
 }
 
-void S9xResetPPU()
+S9X_COLD_INIT void S9xResetPPU()
 {
    int32_t c;
 
@@ -1860,7 +1860,7 @@ void S9xResetPPU()
    Memory.FillRAM[0x4201] = Memory.FillRAM[0x4213] = 0xFF;
 }
 
-void S9xSoftResetPPU()
+S9X_COLD_INIT void S9xSoftResetPPU()
 {
    int32_t c;
 

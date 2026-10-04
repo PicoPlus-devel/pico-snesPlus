@@ -37,6 +37,14 @@
 #define S9X_STRIP_ROWS 16
 #endif
 
+/* Pico port: memmap.c, apu.c, ppu.c, gfx.c, soundux.c and dma.c are moved
+ * into SRAM whole (CMakeLists.txt renames each object's .text section to
+ * .time_critical_*), which also drags along their ROM-load, init and reset
+ * code (~15 KB). Tagging a definition with S9X_COLD_INIT puts it in its own
+ * named section that the rename does not touch, so the linker keeps it in
+ * flash. Only for code that never runs during gameplay. */
+#define S9X_COLD_INIT __attribute__((section(".text.s9x_cold_init")))
+
 #include "pixform.h"
 
 #ifndef _WIN32

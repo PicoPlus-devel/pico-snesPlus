@@ -275,7 +275,7 @@ void S9xSetSoundKeyOff(int32_t channel)
    }
 }
 
-void S9xFixSoundAfterSnapshotLoad()
+S9X_COLD_INIT void S9xFixSoundAfterSnapshotLoad()
 {
    int32_t i;
 
@@ -996,7 +996,7 @@ void S9xResetSound(bool full)
    memset(MixOutputPrev, 0, sizeof(MixOutputPrev));
 }
 
-void S9xSetPlaybackRate(uint32_t playback_rate)
+S9X_COLD_INIT void S9xSetPlaybackRate(uint32_t playback_rate)
 {
    int32_t i;
 
@@ -1037,7 +1037,7 @@ void S9xSetPlaybackRate(uint32_t playback_rate)
       S9xSetSoundFrequency(i, SoundData.channels [i].hertz);
 }
 
-bool S9xInitSound(int32_t buffer_ms, int32_t lag_ms)
+S9X_COLD_INIT bool S9xInitSound(int32_t buffer_ms, int32_t lag_ms)
 {
    /* Pico port: LocalState is ~120 KB (Echo[24000] alone is 96 KB).
     * Lives in PSRAM — audio mix runs at sample rate, not opcode rate. */
@@ -1050,7 +1050,7 @@ bool S9xInitSound(int32_t buffer_ms, int32_t lag_ms)
    return true;
 }
 
-void S9xDeinitSound(void)
+S9X_COLD_INIT void S9xDeinitSound(void)
 {
    if (LocalState)
    {

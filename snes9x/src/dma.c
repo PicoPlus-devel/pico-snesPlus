@@ -760,7 +760,7 @@ uint8_t S9xDoHDMA(uint8_t byte)
    return byte;
 }
 
-void S9xResetDMA(void)
+S9X_COLD_INIT void S9xResetDMA(void)
 {
    int32_t c, d;
    for (d = 0; d < 8; d++)

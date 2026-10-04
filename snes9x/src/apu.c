@@ -12,7 +12,7 @@
 
 extern const int32_t NoiseFreq[32];
 
-bool S9xInitAPU()
+S9X_COLD_INIT bool S9xInitAPU()
 {
    /* IAPU.RAM in SRAM. spc700.c (the SPC700 interpreter) is also in
     * SRAM via .time_critical placement — pairing fast code with fast
@@ -41,7 +41,7 @@ bool S9xInitAPU()
    return true;
 }
 
-void S9xDeinitAPU()
+S9X_COLD_INIT void S9xDeinitAPU()
 {
    if (IAPU.RAM)
    {
@@ -50,7 +50,7 @@ void S9xDeinitAPU()
    }
 }
 
-void S9xResetAPU()
+S9X_COLD_INIT void S9xResetAPU()
 {
    int32_t i, j;
    Settings.APUEnabled = true;

@@ -41,7 +41,7 @@ static bool AllASCII(const uint8_t* b, int32_t size)
    return true;
 }
 
-static int32_t ScoreHiROM(bool skip_header, int32_t romoff)
+S9X_COLD_INIT static int32_t ScoreHiROM(bool skip_header, int32_t romoff)
 {
    int32_t o = skip_header ? 0xff00 + 0x200 : 0xff00;
    const uint8_t *base = &Memory.ROM[o + romoff];
@@ -84,7 +84,7 @@ static int32_t ScoreHiROM(bool skip_header, int32_t romoff)
    return score;
 }
 
-static int32_t ScoreLoROM(bool skip_header, int32_t romoff)
+S9X_COLD_INIT static int32_t ScoreLoROM(bool skip_header, int32_t romoff)
 {
    int32_t o = skip_header ? 0x7f00 + 0x200 : 0x7f00;
    const uint8_t *base = &Memory.ROM[o + romoff];
@@ -146,7 +146,7 @@ static void Sanitize(char* str, size_t bufsize)
 
 extern FxInit_s SuperFX;
 
-bool S9xInitMemory(void)
+S9X_COLD_INIT bool S9xInitMemory(void)
 {
    /* All emulator buffers live in PSRAM. The hot snes9x C files (cpuops,
     * spc700, gfx, tile, ppu, memmap, soundux, dma, clip, apu, getset,
@@ -234,7 +234,7 @@ bool S9xInitMemory(void)
    return true;
 }
 
-void S9xDeinitMemory(void)
+S9X_COLD_INIT void S9xDeinitMemory(void)
 {
    port_alloc_free(Memory.RAM);     Memory.RAM = NULL;
    port_alloc_free(Memory.SRAM);    Memory.SRAM = NULL;
@@ -266,7 +266,7 @@ void S9xDeinitMemory(void)
 /* This function loads a Snes-Backup image                                                    */
 /**********************************************************************************************/
 
-bool LoadROM(const char* filename)
+S9X_COLD_INIT bool LoadROM(const char* filename)
 {
    size_t TotalFileSize = 0;
    FILE *fp;
@@ -425,7 +425,7 @@ bool LoadROM(const char* filename)
    return true;
 }
 
-void ParseSNESHeader(uint8_t* RomHeader)
+S9X_COLD_INIT void ParseSNESHeader(uint8_t* RomHeader)
 {
    Memory.SRAMSize = RomHeader [0x28];
    memcpy(Memory.ROMName, &RomHeader[0x10], ROM_NAME_LEN);
@@ -445,7 +445,7 @@ void ParseSNESHeader(uint8_t* RomHeader)
    Memory.CompanyId[2] = 0;
 }
 
-void InitROM(bool Interleaved)
+S9X_COLD_INIT void InitROM(bool Interleaved)
 {
    uint8_t* RomHeader;
    uint32_t sum1 = 0;
@@ -749,11 +749,11 @@ void map_index(uint32_t bank_s, uint32_t bank_e, uint32_t addr_s, uint32_t addr_
    }
 }
 
-void WriteProtectROM(void)
+S9X_COLD_INIT void WriteProtectROM(void)
 {
 }
 
-void MapRAM(void)
+S9X_COLD_INIT void MapRAM(void)
 {
    int32_t c, i;
 
@@ -804,7 +804,7 @@ void MapRAM(void)
    WriteProtectROM();
 }
 
-void MapExtraRAM(void)
+S9X_COLD_INIT void MapExtraRAM(void)
 {
    int32_t c;
 
@@ -832,7 +832,7 @@ void MapExtraRAM(void)
    }
 }
 
-void LoROMMap(void)
+S9X_COLD_INIT void LoROMMap(void)
 {
    int32_t c;
    int32_t i;
@@ -901,7 +901,7 @@ void LoROMMap(void)
  * LoROMMap lays those out in the LoROM 32 KB style (c << 11). The GSU program,
  * its data and most game assets live in those banks, so getting this wrong
  * boots the CPU (audio plays) but leaves the GSU unprogrammed -> black screen. */
-void SuperFXROMMap(void)
+S9X_COLD_INIT void SuperFXROMMap(void)
 {
    int32_t c;
    int32_t i;
@@ -975,7 +975,23 @@ void SuperFXROMMap(void)
  * derived explicitly (ROM blocks -> MAP_NONE). BW-RAM aliases into Memory.SRAM;
  * SA-1 I-RAM lives at FillRAM[0x3000] (shared with the SuperFX GSU register
  * window, but the two chips are mutually exclusive). */
-void SA1ROMMap(void)
+/* SRAM-first with PSRAM fallback; the boot log prints the tier, like the
+ * render strips in port_glue.cpp. */
+S9X_COLD_INIT static uint8_t** SA1AllocMap(const char* name)
+{
+   const size_t bytes = MEMMAP_NUM_BLOCKS * sizeof(uint8_t*);
+   uint8_t** p = (uint8_t**) port_alloc_sram(bytes);
+   if (p)
+      printf("%s (%u B) in SRAM\n", name, (unsigned) bytes);
+   else
+   {
+      p = (uint8_t**) port_alloc_psram(bytes);
+      printf("%s (%u B) in PSRAM (SRAM heap full)\n", name, (unsigned) bytes);
+   }
+   return p;
+}
+
+S9X_COLD_INIT void SA1ROMMap(void)
 {
    int32_t c;
    int32_t i;
@@ -992,17 +1008,9 @@ void SA1ROMMap(void)
     * SRAM for EVERY game (which pushed the render strips into PSRAM). SRAM-
     * first with a PSRAM fallback, like Memory.Map. Allocate once, reuse. */
    if (!SA1.Map)
-   {
-      SA1.Map = (uint8_t**) port_alloc_sram(MEMMAP_NUM_BLOCKS * sizeof(uint8_t*));
-      if (!SA1.Map)
-         SA1.Map = (uint8_t**) port_alloc_psram(MEMMAP_NUM_BLOCKS * sizeof(uint8_t*));
-   }
+      SA1.Map = SA1AllocMap("SA1.Map");
    if (!SA1.WriteMap)
-   {
-      SA1.WriteMap = (uint8_t**) port_alloc_sram(MEMMAP_NUM_BLOCKS * sizeof(uint8_t*));
-      if (!SA1.WriteMap)
-         SA1.WriteMap = (uint8_t**) port_alloc_psram(MEMMAP_NUM_BLOCKS * sizeof(uint8_t*));
-   }
+      SA1.WriteMap = SA1AllocMap("SA1.WriteMap");
 
    /* Banks 00->3f and 80->bf (main-CPU view) */
    for (c = 0; c < 0x400; c += 16)
@@ -1083,7 +1091,7 @@ void SA1ROMMap(void)
    Memory.BWRAM = Memory.SRAM;
 }
 
-void DSPMap(void)
+S9X_COLD_INIT void DSPMap(void)
 {
    switch (Settings.DSP)
    {
@@ -1123,7 +1131,7 @@ void DSPMap(void)
    }
 }
 
-void HiROMMap(void)
+S9X_COLD_INIT void HiROMMap(void)
 {
    int32_t i;
    int32_t c;
@@ -1181,7 +1189,7 @@ void HiROMMap(void)
 }
 
 
-void TalesROMMap(bool Interleaved)
+S9X_COLD_INIT void TalesROMMap(bool Interleaved)
 {
    int32_t c;
    int32_t i;
@@ -1268,7 +1276,7 @@ void TalesROMMap(bool Interleaved)
    WriteProtectROM();
 }
 
-void AlphaROMMap(void)
+S9X_COLD_INIT void AlphaROMMap(void)
 {
    int32_t c;
    int32_t i;
@@ -1311,7 +1319,7 @@ void AlphaROMMap(void)
    WriteProtectROM();
 }
 
-void LoROM24MBSMap(void)
+S9X_COLD_INIT void LoROM24MBSMap(void)
 {
    int32_t c;
    int32_t i;
@@ -1377,7 +1385,7 @@ void LoROM24MBSMap(void)
    WriteProtectROM();
 }
 
-void SRAM512KLoROMMap(void)
+S9X_COLD_INIT void SRAM512KLoROMMap(void)
 {
    int32_t c;
    int32_t i;
@@ -1420,7 +1428,7 @@ void SRAM512KLoROMMap(void)
    WriteProtectROM();
 }
 
-void SRAM1024KLoROMMap(void)
+S9X_COLD_INIT void SRAM1024KLoROMMap(void)
 {
    int32_t c;
    int32_t i;
@@ -1450,7 +1458,7 @@ void SRAM1024KLoROMMap(void)
    WriteProtectROM();
 }
 
-void CapcomProtectLoROMMap(void)
+S9X_COLD_INIT void CapcomProtectLoROMMap(void)
 {
    int32_t c;
    int32_t i;
@@ -1480,7 +1488,7 @@ void CapcomProtectLoROMMap(void)
    WriteProtectROM();
 }
 
-void JumboLoROMMap(bool Interleaved)
+S9X_COLD_INIT void JumboLoROMMap(bool Interleaved)
 {
    int32_t c;
    int32_t i;
@@ -1575,37 +1583,37 @@ void JumboLoROMMap(bool Interleaved)
    WriteProtectROM();
 }
 
-const char* TVStandard(void)
+S9X_COLD_INIT const char* TVStandard(void)
 {
    return Settings.PAL ? "PAL" : "NTSC";
 }
 
-const char* Speed(void)
+S9X_COLD_INIT const char* Speed(void)
 {
    return Memory.ROMSpeed & 0x10 ? "120ns" : "200ns";
 }
 
-const char* MapType(void)
+S9X_COLD_INIT const char* MapType(void)
 {
    return Memory.HiROM ? "HiROM" : "LoROM";
 }
 
-const char* ROMID(void)
+S9X_COLD_INIT const char* ROMID(void)
 {
    return Memory.ROMId;
 }
 
-bool match_na(const char* str)
+S9X_COLD_INIT bool match_na(const char* str)
 {
    return strcmp(Memory.ROMName, str) == 0;
 }
 
-bool match_id(const char* str)
+S9X_COLD_INIT bool match_id(const char* str)
 {
    return strncmp(Memory.ROMId, str, strlen(str)) == 0;
 }
 
-void ApplyROMPatches(void)
+S9X_COLD_INIT void ApplyROMPatches(void)
 {
    /* Mario Early Years: Fun with Numbers */
    if ((strncmp ((char *) &Memory.ROM [0x7fc0], "MEY Fun with Numbers", 20) == 0))
@@ -1682,7 +1690,7 @@ void ApplyROMPatches(void)
 #endif
 }
 
-void ApplyROMFixes(void)
+S9X_COLD_INIT void ApplyROMFixes(void)
 {
    /*
    HACKS NSRT can fix that we hadn't detected before.

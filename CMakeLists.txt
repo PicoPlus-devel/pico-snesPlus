@@ -77,6 +77,19 @@ add_definitions(-DNDEBUG)
 # scoped (add_definitions) so it reaches the pico_shared driver build.
 add_definitions(-DDI_RING_BUFFER_SIZE=208)
 
+# Move cold pico_shared buffers out of SRAM (~4.8 KB in total), which leaves
+# more SRAM heap for the render strips. None of them is touched by the
+# emulation, render, audio or scan-out hot paths. Directory-scoped so the
+# definitions reach the pico_shared sources.
+#   FF_USE_LFN=3          FatFs long-filename work buffers (1,120 B) are
+#                         allocated per f_open/f_readdir from PSRAM instead of
+#                         sitting in .bss; f_read/f_lseek never allocate.
+#   FRENS_FS_IN_PSRAM     FatFs volume object (848 B) in PSRAM.
+#   FRENS_WAV_IN_PSRAM    Menu WAV player state + path (911 B) in PSRAM.
+#   VU_METER_STREAMING    VU meter averages with a running sum instead of a
+#                         1,920 B sample buffer; identical output.
+add_definitions(-DFF_USE_LFN=3 -DFRENS_FS_IN_PSRAM=1 -DFRENS_WAV_IN_PSRAM=1 -DVU_METER_STREAMING=1)
+
 # Opt in to the pico_shared HSTX driver's SCRATCH_X core1 stack (frees the
 # driver's 4 KB static stack buffer back to the SRAM heap). Pairs with
 # PICO_CORE1_STACK_SIZE=4096 below, which sizes the scratch reservation to
@@ -536,6 +549,11 @@ target_link_options(${projectname} PRIVATE -Xlinker --print-memory-usage --data-
 #      are reachable through dispatch tables / pointers, that's desired.
 #   2. PRE_LINK objcopy renames those monolithic sections to
 #      .time_critical_<x> / .time_critical_rodata_<x>.
+#   3. Only the exact .text/.rodata names are renamed, so a function tagged
+#      S9X_COLD_INIT (snes9x/src/port.h, section .text.s9x_cold_init) stays
+#      in flash. The ROM-load, init and reset code in these files (~15 KB:
+#      LoadROM, InitROM, ApplyROMFixes, the *ROMMap functions, S9xReset*)
+#      is tagged that way, which returns that SRAM to the heap.
 # Moving .rodata pulls hot lookup tables out of the shared 16 KB XIP cache:
 # the five 65c816 dispatch tables in cpuops.c (5 KB) are read on every
 # emulated instruction; tile.c's odd/even planar tables (512 B) are hit
