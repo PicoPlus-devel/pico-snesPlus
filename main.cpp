@@ -34,6 +34,8 @@
 
 #include "FrensHelpers.h"
 #include "FrensFonts.h"
+#include "romflash.h"
+#include "progress_bar.h"
 #include "settings.h"
 #include "menu.h"
 #include "menu_settings.h"
@@ -67,6 +69,21 @@ extern "C" {
 #include "msu1.h"
 #endif
 
+#if ENABLE_SPC7110
+/* SPC7110: Hudson's graphics decompressor + memory mapper, plus the
+ * RTC-4513 on ROMType $F9. Registers and mapping live in the core; this
+ * file supplies the RTC its clock and persists it. See snes9x/src/spc7110.h. */
+#include "spc7110.h"
+#endif
+
+#if ENABLE_SDD1
+/* S-DD1: decompressor + 1 MB bank mapper (Street Fighter Alpha 2, Star
+ * Ocean). Wired entirely inside the core; main.cpp only frees its PSRAM
+ * block when the session ends and shows its cost in the FPS overlay. See
+ * snes9x/src/sdd1.h. */
+#include "sdd1.h"
+#endif
+
 #if RENDER_TO_FB
 /* port glue — strip renderer. Re-anchors the framebuffer window for the
  * current PPU.ScreenHeight (the overscan bit flips 224<->239 at runtime)
@@ -80,6 +97,14 @@ extern "C" uint16_t *s9x_port_fb_window;
  * [block_start, block_end] row range (strip physical row 0 == block_start). */
 extern "C" void (*s9x_port_strip_top_hook)(uint16_t *strip, int stride,
                                            int block_start, int block_end);
+/* Tear guard (port_glue.cpp): scan-out beam position and per-frame tracking
+ * of where the strips landed relative to the refreshes, used by paceFrame. */
+extern "C" void     s9x_port_beam_install(void);
+extern "C" uint32_t s9x_port_beam_pos(void);
+extern "C" void     s9x_port_tear_frame_begin(void);
+extern "C" bool     s9x_port_tear_frame_end(int32_t *psi_mid, bool *torn);
+extern "C" void     s9x_port_tear_stats(uint32_t *frames, uint32_t *torn, uint32_t *waits,
+                                        uint32_t *wait_us, uint32_t *span_max);
 #else
 /* port glue — snes9x's render target, 256-wide RGB555 in PSRAM. */
 extern uint16_t *g_snes_private_screen;
@@ -100,6 +125,15 @@ extern uint16_t *g_snes_private_screen;
 bool isFatalError = false;
 char *romName = nullptr;
 char selectedRom[FF_MAX_LFN] = {0};
+#if AUDIO_WATCHDOG
+/* Loudest sample core1 has mixed since core0 last looked. See
+ * audio_watchdog_tick(). */
+volatile uint32_t g_mix_peak = 0;
+#endif
+/* One-shot "resume this cart after the flash write" handshake across the
+ * reboot romflash needs. See the loop entry in main(). */
+static constexpr int      SNES_RESUME_SCRATCH = 5;
+static constexpr uint32_t SNES_RESUME_MAGIC   = 0x5E5F1A54u;
 
 /* Frames rendered in the last ~1 s window, updated by the per-second block in
  * run_emulator() and read by the on-screen FPS overlay. */
@@ -149,6 +183,9 @@ uint16_t wiipad_raw_cached = 0;
 /* Frame counter for the rapid-fire A/B menu setting (port_glue.cpp gates
  * the A/B bits on bit 1, giving a 15 Hz autofire). */
 uint32_t g_rapid_fire_counter = 0;
+/* Raised when the in-game menu closes so the confirm press does not reach the
+ * game; cleared per port by S9xReadJoypad once the pad reads clear. */
+extern "C" volatile bool g_pad_ignore_request;
 /* ErrorMessage[] is owned by the framework (FrensHelpers.cpp); declared
  * extern in FrensHelpers.h. */
 
@@ -191,6 +228,9 @@ int8_t g_settings_visibility_snes[MOPT_COUNT] = {
     [MOPT_SERIAL_KEYBOARD]          = 0,                  /* TI-99/4A only */
     [MOPT_SPRITE_LIMIT]             = 0,                  /* NES only */
     [MOPT_MENU_OVERSCAN]            = 0,                  /* Overscan in menu (menu.cpp force-shows this below the menu colors) */
+    [MOPT_GENESIS_PAD]              = 0,                  /* Genesis only */
+    [MOPT_NES_PALETTE]              = 0,                  /* NES only */
+    [MOPT_HSTX_CLOCK_FIX]           = HSTX && !CFG_TUH_RPI_PIO_USB, /* Video Clock Fix (PIO-USB builds always have it, see SNES_OVERCLOCK_FIX) */
 };
 
 static const uint8_t g_available_screen_modes_snes[] = {
@@ -346,6 +386,16 @@ static void __not_in_flash_func(core1_mix_task)(void)
         port_sound_lock();
         S9xMixSamples(mix_buf_c1, n * 2);
         port_sound_unlock();
+#if AUDIO_WATCHDOG
+        {
+            int pk = 0;
+            for (int i = 0; i < n * 2; i++) {
+                int v = mix_buf_c1[i] < 0 ? -mix_buf_c1[i] : mix_buf_c1[i];
+                if (v > pk) pk = v;
+            }
+            if ((uint32_t)pk > g_mix_peak) g_mix_peak = (uint32_t)pk;
+        }
+#endif
 #if ENABLE_MSU1
         /* MSU-1 PCM sums on top of the SNES DSP mix — before the VU meter so
          * the meter shows what actually leaves the box, and before both sink
@@ -524,12 +574,57 @@ static void __not_in_flash_func(pump_audio)(void)
  * each frame to its own tick, forcing 3 SNES frames into 4 vsync
  * intervals = 45 fps even when the emulator could produce 60. Soft
  * pacing lets the emulator free-run at its true rate; may introduce
- * tearing on the blit if it lands mid-scan. */
+ * tearing on the blit if it lands mid-scan.
+ *
+ * PACE_VSYNC_PHASE (strip renderer only) supersedes both for NTSC. It paces
+ * whole frameskip groups (one rendered frame plus the skipped ones after
+ * it) instead of single frames, so it has the soft pacer's throughput, but
+ * starts every group on the display's refresh grid: a group of N frames
+ * gets exactly N refreshes. Free-running against the display is what let
+ * the strip copy-out and the beam leapfrog each other into stair-stepped
+ * tears; on the grid, pace_note_frame() can then move the start phase until
+ * a rendered frame's strips all reach the screen in the same refresh. A
+ * group that overruns starts late, without waiting, as with the soft pacer.
+ * groupEnd: the next frame starts a new group (it will be rendered). */
 static absolute_time_t pal_next_frame;
-#if PACE_SOFT_60FPS
+#if PACE_SOFT_60FPS && !PACE_VSYNC_PHASE
 static absolute_time_t soft_next_frame;
 #endif
-static void paceFrame(bool init)
+#if PACE_VSYNC_PHASE
+static constexpr int32_t PACE_LINES = MODE_V_TOTAL_LINES;  /* output lines per refresh */
+static uint32_t pace_slot;      /* beam position (s9x_port_beam_pos) the next group starts at */
+static uint32_t pace_frames;    /* frames run since the current group started */
+static int32_t  pace_nudge;     /* phase correction, lines, applied at the next group start */
+static bool     pace_on_time;   /* the current group started on its slot, not late */
+static bool     pace_have_frame;/* the current group's rendered frame reported below */
+static int32_t  pace_last_m;    /* ... its psi midpoint, mod PACE_LINES */
+static bool     pace_last_torn; /* ... and whether it reached the screen torn */
+static uint32_t pace_bad_run;   /* consecutive groups that started late AND tore */
+static uint32_t pace_since_jump;/* groups since the last phase jump (saturating) */
+
+/* A rendered frame's tear report (s9x_port_tear_frame_end). Steers the
+ * group start phase so the frame's psi midpoint sits in the middle of a
+ * refresh interval, as far as possible from both refreshes that could catch
+ * a strip. A quarter of the error per frame, capped at ~1 ms, so a game's
+ * changing render load moves the phase smoothly. Only from groups that
+ * started on their slot: a late group's start was not the phase the pacer
+ * asked for, and steering on it winds the slot away from reality. */
+static void pace_note_frame(int32_t psi_mid, bool torn)
+{
+    int32_t m = psi_mid % PACE_LINES;
+    if (m < 0) m += PACE_LINES;
+    pace_last_m     = m;
+    pace_last_torn  = torn;
+    pace_have_frame = true;
+    if (!pace_on_time)
+        return;
+    int32_t step = (PACE_LINES / 2 - m) / 4;
+    if (step > 32) step = 32;
+    if (step < -32) step = -32;
+    pace_nudge += step;
+}
+#endif
+static void paceFrame(bool init, bool groupEnd = true)
 {
     if (Settings.PAL) {
         if (init) {
@@ -543,7 +638,57 @@ static void paceFrame(bool init)
             pal_next_frame = make_timeout_time_us(20000);
         }
     } else {
-#if PACE_SOFT_60FPS
+#if PACE_VSYNC_PHASE
+        if (init) {
+            pace_slot       = s9x_port_beam_pos();
+            pace_frames     = 0;
+            pace_nudge      = 0;
+            pace_on_time    = false;
+            pace_have_frame = false;
+            pace_bad_run    = 0;
+            pace_since_jump = 0;
+            return;
+        }
+        pace_frames++;
+        if (!groupEnd)
+            return;   /* skipped frames run back to back inside their group */
+        pace_slot  += pace_frames * PACE_LINES + pace_nudge;
+        pace_frames = 0;
+        pace_nudge  = 0;
+        if (pace_since_jump < 0xFFFF)
+            pace_since_jump++;
+        int32_t late = (int32_t)(s9x_port_beam_pos() - pace_slot);
+        bool on_time = late < 0;
+        pace_bad_run = (!on_time && pace_have_frame && pace_last_torn) ? pace_bad_run + 1 : 0;
+        if (on_time) {
+            while ((int32_t)(s9x_port_beam_pos() - pace_slot) < 0)
+                tight_loop_contents();
+        } else if (late >= PACE_LINES) {
+            /* A refresh or more behind (a heavy scene): give up the missed
+             * refreshes rather than racing to catch up, but keep the phase.
+             * A smaller lateness keeps the slot, so the next groups' slack
+             * absorbs it. */
+            pace_slot += (uint32_t)(late / PACE_LINES) * PACE_LINES;
+        }
+        if (pace_bad_run >= 4 && pace_since_jump >= 60) {
+            /* Stuck: with almost no slack per group a late start can hold
+             * itself in place (the torn frame makes strips wait for the
+             * beam, the waits eat the slack), and steering cannot move a
+             * start that is already late any earlier. Jump forward to the
+             * phase the last frame asked for instead: one delay of under a
+             * refresh. At most every ~60 groups (2 s with frameskip), which
+             * bounds the cost when the scene simply cannot hold 60 fps. */
+            pace_slot = s9x_port_beam_pos() +
+                        (uint32_t)((PACE_LINES / 2 - pace_last_m + PACE_LINES) % PACE_LINES);
+            while ((int32_t)(s9x_port_beam_pos() - pace_slot) < 0)
+                tight_loop_contents();
+            on_time         = true;
+            pace_bad_run    = 0;
+            pace_since_jump = 0;
+        }
+        pace_on_time    = on_time;
+        pace_have_frame = false;
+#elif PACE_SOFT_60FPS
         if (init) {
             soft_next_frame = make_timeout_time_us(16716);
             return;
@@ -680,15 +825,237 @@ static bool snes9x_setup_settings(void)
     return true;
 }
 
-static bool snes9x_load_rom_from_psram(uintptr_t psram_ptr, size_t romsize)
+/* rom_ptr is either the framework's PSRAM copy or, for carts too big to
+ * preload, the image in XIP flash (romflash.h). read_only says which: an XIP
+ * pointer cannot take the in-place header fixups ApplyROMPatches() makes for a
+ * handful of named carts, and a write there would be silently dropped. */
+/* PSRAM the emulator still needs once the ROM is in place. Derived from the
+ * allocation sites rather than guessed, because getting it wrong is only
+ * discovered after the ROM has been committed -- a 7 MB cart leaves 1023 KB
+ * free, needs ~1.04 MB, and dies in S9xInitDisplay with "Display init failed".
+ *
+ * The first group is unconditional PSRAM (memmap.c S9xInitMemory, port_glue).
+ * The second is the SRAM-first allocations, which by the time the menu has run
+ * routinely spill to PSRAM anyway -- the render strips already do. Budgeting
+ * for the spill costs nothing but a slightly earlier switch to flash. */
+static size_t snes_psram_working_set(void)
 {
-    if (!psram_ptr || !romsize) return false;
+    size_t n = 0;
 
-    /* Hand the PSRAM buffer to snes9x. LoadROM(NULL) treats Memory.ROM as
+    n += RAM_SIZE;                        /* Memory.RAM            128 KB */
+    n += VRAM_SIZE;                       /* Memory.VRAM            64 KB */
+    n += SRAM_SIZE;                       /* Memory.SRAM           128 KB */
+    n += 256u * 9u * sizeof(uint16_t);    /* IPPU.ScreenColors     4.5 KB */
+    n += (size_t)MAX_2BIT_TILES * 128u;   /* IPPU.TileCache        512 KB */
+    n += (size_t)MAX_2BIT_TILES;          /* IPPU.TileCached         4 KB */
+    n += 0x2000u;                         /* bytes0x2000             8 KB */
+    n += (size_t)SNES_HEIGHT_EXTENDED * 128u; /* s9x_port_objonline 30 KB */
+    n += 120u * 1024u;                    /* soundux LocalState (file-static) */
+#if RENDER_TO_FB || FILLRAM_IN_PSRAM
+    n += FILLRAM_SIZE;                    /* FillRAM forced to PSRAM 32 KB */
+#endif
+#if ENABLE_MSU1
+    n += 68u * 1024u;                     /* MSU-1 ring + data window, if a pack exists */
+#endif
+
+    n += 64u * 1024u;                     /* IAPU.RAM          } SRAM-first, */
+    n += 26u * 1024u;                     /* render strips     } but spill   */
+    n += 20u * 1024u;                     /* Memory.Map+MapInfo} when the    */
+    n += 23u * 1024u;                     /* gfx LocalState    } arena fills */
+    n += 32u * 1024u;                     /* lwmem block overhead + slack */
+    return n;
+}
+
+#if AUDIO_WATCHDOG
+/* Why-is-it-silent watchdog. core1 records the loudest sample it mixed; core0
+ * checks once a second. Three silent seconds in a row while audio is enabled
+ * means the DSP is being asked for sound and returning none -- which looks
+ * identical to a healthy system from the outside: 60 fps, no underruns, no
+ * resyncs, because the mixer is still feeding the queue, just with zeros.
+ * Dumps the state that distinguishes the causes, once per silent spell. */
+
+static void audio_watchdog_tick(void)
+{
+    static int  silent_secs = 0;
+    static bool reported    = false;
+
+    /* Deliberately NOT returning early when audio is disabled: "the setting
+     * got turned off" is itself a candidate explanation, and returning here
+     * would hide exactly that. It is reported below instead. */
+    if (g_mix_peak != 0) { silent_secs = 0; reported = false; g_mix_peak = 0; return; }
+    if (++silent_secs < 3 || reported) return;
+    reported = true;
+
+    printf("AUDIO SILENT %ds. audioEnabled=%d route=%s | so.mute=%d so.rate=%lu | "
+           "DSP FLG=%02x KON=%02x KOFF=%02x keyed=%02x "
+           "ENDX=%02x MVOL=%d/%d | SPC PC=%04x ports=%02x %02x %02x %02x\n",
+           silent_secs, (int)settings.flags.audioEnabled,
+           audio_route_to_ext() ? "ext" : "hdmi",
+           (int)so.mute_sound, (unsigned long)so.playback_rate,
+           APU.DSP[APU_FLG], APU.DSP[APU_KON], APU.DSP[APU_KOFF],
+           APU.KeyedChannels, APU.DSP[APU_ENDX],
+           (int8_t)APU.DSP[APU_MVOL_LEFT], (int8_t)APU.DSP[APU_MVOL_RIGHT],
+           (unsigned)(IAPU.PC - IAPU.RAM),
+           APU.OutPorts[0], APU.OutPorts[1], APU.OutPorts[2], APU.OutPorts[3]);
+    printf("  channels state/vol:");
+    for (int i = 0; i < 8; i++)
+        printf(" %d:%d/%d,%d", i, SoundData.channels[i].state,
+               SoundData.channels[i].volume_left,
+               SoundData.channels[i].volume_right);
+    printf("\n");
+
+    /* ENDX=ff with the driver still writing volumes means every voice hit the
+     * END flag of its BRR block immediately, which is what corrupt sample data
+     * looks like. Print the sample directory and the first BRR header each
+     * voice points at: header bit 0 is END, so 0x01/0x03 on every voice is
+     * garbage, while sane headers put the blame on DSP state instead. */
+    {
+        uint32_t dir = (uint32_t)APU.DSP[0x5d] << 8;
+            extern uint32_t g_apu_port_writes;
+        static uint32_t prev_port_writes = 0;
+        printf("  CPU->APU port writes since last report: %lu\n",
+               (unsigned long)(g_apu_port_writes - prev_port_writes));
+        prev_port_writes = g_apu_port_writes;
+        {
+            extern uint8_t  g_apu_port_log[16][2];
+            extern uint32_t g_apu_port_log_pos;
+            printf("  last CPU->APU writes (port=val):");
+            for (int i = 0; i < 16; i++) {
+                uint32_t k = (g_apu_port_log_pos + i) & 15;
+                printf(" %d=%02x", g_apu_port_log[k][0], g_apu_port_log[k][1]);
+            }
+            printf("\n  SPC sees $f4-$f7: %02x %02x %02x %02x\n",
+                   IAPU.RAM[0xf4], IAPU.RAM[0xf5], IAPU.RAM[0xf6], IAPU.RAM[0xf7]);
+            {
+                extern uint32_t g_apu_kon_writes, g_apu_kon_bits,
+                                g_apu_koff_writes, g_apu_dsp_writes;
+                static uint32_t pk, pf, pd;
+                printf("  DSP writes: %lu  KON(nonzero): %lu bits=%02x  KOFF: %lu\n",
+                       (unsigned long)(g_apu_dsp_writes - pd),
+                       (unsigned long)(g_apu_kon_writes - pk),
+                       (unsigned)g_apu_kon_bits,
+                       (unsigned long)(g_apu_koff_writes - pf));
+                pk = g_apu_kon_writes; pf = g_apu_koff_writes;
+                pd = g_apu_dsp_writes; g_apu_kon_bits = 0;
+            }
+            /* Timers clock the driver's sequencer; they are ticked off the
+             * scanline loop, so a frozen counter here means the SPC700 is not
+             * being executed rather than that the game went quiet. */
+            printf("  timers en=%d%d%d tgt=%03x/%03x/%03x cnt=%x/%x/%x\n",
+                   (int)APU.TimerEnabled[0], (int)APU.TimerEnabled[1],
+                   (int)APU.TimerEnabled[2],
+                   (unsigned)APU.TimerTarget[0], (unsigned)APU.TimerTarget[1],
+                   (unsigned)APU.TimerTarget[2],
+                   IAPU.RAM[0xfd], IAPU.RAM[0xfe], IAPU.RAM[0xff]);
+            /* FLG bit 5 going 1->0 lets the DSP write echo into APU RAM. If
+             * that region lands on the driver, the driver dies at a fixed time
+             * after the game enables echo -- which is the observed symptom.
+             * Checksums of the code area say whether APU RAM is being eaten. */
+            {
+                uint32_t esa = (uint32_t)APU.DSP[APU_ESA] << 8;
+                uint32_t edl = (uint32_t)(APU.DSP[APU_EDL] & 0x0f) * 2048;
+                uint32_t a, ck1 = 0, ck2 = 0;
+                for (a = 0x0200; a < 0x2000; a++) ck1 = (ck1 << 1 | ck1 >> 31) + IAPU.RAM[a];
+                for (a = 0xff00; a < 0xffc0; a++) ck2 = (ck2 << 1 | ck2 >> 31) + IAPU.RAM[a];
+                printf("  echo ESA=%04lx EDL=%x range=%04lx-%04lx EON=%02x | "
+                       "apuram ck %08lx/%08lx\n",
+                       (unsigned long)esa, APU.DSP[APU_EDL] & 0x0f,
+                       (unsigned long)esa, (unsigned long)(esa + (edl ? edl : 4)),
+                       APU.DSP[APU_EON],
+                       (unsigned long)ck1, (unsigned long)ck2);
+            }
+        }
+        /* Walk each voice's BRR chain to the END bit. A real instrument is
+         * tens to hundreds of 9-byte blocks; 1 or 2 means the sample data in
+         * APU RAM is truncated or garbage, which is exactly what "every
+         * key-on ends immediately" looks like from the mixer's side. */
+        printf("  DIR=%04x\n", (unsigned)dir);
+        for (int v = 0; v < 8; v++) {
+            uint32_t e    = (dir + ((uint32_t)APU.DSP[(v << 4) | 0x04] << 2)) & 0xffff;
+            uint32_t brr  = (IAPU.RAM[e] | (IAPU.RAM[(e + 1) & 0xffff] << 8)) & 0xffff;
+            uint32_t loop = (IAPU.RAM[(e + 2) & 0xffff] |
+                             (IAPU.RAM[(e + 3) & 0xffff] << 8)) & 0xffff;
+            uint32_t a = brr, n = 0;
+            uint8_t  h = IAPU.RAM[brr];
+            while (n < 1024) { n++; if (IAPU.RAM[a] & 1) break; a = (a + 9) & 0xffff; }
+            printf("    v%d src=%02x start=%04x loop=%04x hdr=%02x blocks=%lu end=%04x"
+                   " adsr=%02x%02x gain=%02x envx=%d pitch=%02x%02x\n",
+                   v, APU.DSP[(v << 4) | 0x04], (unsigned)brr, (unsigned)loop, h,
+                   (unsigned long)n, (unsigned)a,
+                   APU.DSP[(v << 4) | 0x05], APU.DSP[(v << 4) | 0x06],
+                   APU.DSP[(v << 4) | 0x07], SoundData.channels[v].envx,
+                   APU.DSP[(v << 4) | 0x03], APU.DSP[(v << 4) | 0x02]);
+        }
+    }
+}
+#endif
+
+/* Decimal conversion for the flash status line. snprintf lives in flash and
+ * pulls in a lot of machinery; this is three lines and stays SRAM-resident
+ * with the rest of that path. Returns the number of characters written. */
+static int snes_u32_to_dec(char *out, uint32_t v)
+{
+    char tmp[10];
+    int  n = 0;
+    do { tmp[n++] = (char)('0' + (v % 10)); v /= 10; } while (v);
+    for (int i = 0; i < n; i++) out[i] = tmp[n - 1 - i];
+    return n;
+}
+
+#if HSTX
+/* Progress bar during a ROM-to-flash write. Must be SRAM-resident: core1 is
+ * still servicing scan-out while XIP is off, and progress_bar_draw() is
+ * __not_in_flash_func for the same reason. Colours are RGB555 literals so
+ * nothing is read from a palette in flash. */
+#define PB_COL_BORDER 0x0000u   /* black  */
+#define PB_COL_EMPTY  0x7FFFu   /* white  */
+#define PB_COL_FILL   0x03E0u   /* green  */
+
+static void snes_romflash_progress(int phase, uint32_t done, uint32_t total)
+{
+    /* Erase is the long pole (~30 s of a ~45 s write), so give it most of the
+     * bar: 0..60 for erase, 60..100 for the write. */
+    uint32_t pct = total == 0 ? 0
+                 : (phase == SNES_ROMFLASH_ERASE)
+                     ? (uint32_t)((uint64_t)done * 60u / total)
+                     : 60u + (uint32_t)((uint64_t)done * 40u / total);
+
+    /* The write phase fires ~1792 times; only redraw when the bar moves. */
+    static uint32_t last = 0xFFFFFFFFu;
+    if (pct == last && done != total) return;
+    last = pct;
+
+    /* Phase plus KB, so the screen says something useful while the bar sits
+     * on the same percentage for a few seconds during a block erase. Built
+     * with no printf: this runs between bootrom flash calls and stays
+     * SRAM-only on principle. */
+    char st[32];
+    const char *what = (phase == SNES_ROMFLASH_ERASE) ? "Erasing " : "Writing ";
+    int n = 0;
+    while (what[n] && n < 12) { st[n] = what[n]; n++; }
+    uint32_t kb = done / 1024u, tkb = total / 1024u;
+    n += snes_u32_to_dec(st + n, kb);
+    st[n++] = '/';
+    n += snes_u32_to_dec(st + n, tkb);
+    st[n++] = ' '; st[n++] = 'K'; st[n++] = 'B'; st[n] = 0;
+    progress_bar_draw_status(st, PB_COL_EMPTY, PB_COL_BORDER);
+
+    progress_bar_draw(pct, 100, PB_COL_FILL, PB_COL_EMPTY, PB_COL_BORDER);
+}
+#else
+static void snes_romflash_progress(int, uint32_t, uint32_t) {}
+#endif
+
+static bool snes9x_load_rom(uintptr_t rom_ptr, size_t romsize, bool read_only)
+{
+    if (!rom_ptr || !romsize) return false;
+
+    /* Hand the buffer to snes9x. LoadROM(NULL) treats Memory.ROM as
      * already populated; AllocSize doubles as "file size" in that path. */
-    Memory.ROM           = (uint8_t *)psram_ptr;
+    Memory.ROM           = (uint8_t *)rom_ptr;
     Memory.ROM_AllocSize = romsize;
     Memory.ROM_Offset    = 0;
+    Memory.ROMReadOnly   = read_only;
 
     if (!LoadROM(NULL)) {
         snprintf(ErrorMessage, ERRORMESSAGESIZE, "Not a SNES ROM.");
@@ -697,14 +1064,23 @@ static bool snes9x_load_rom_from_psram(uintptr_t psram_ptr, size_t romsize)
 
     /* Reject special-chip ROMs we don't emulate. Emulated and allowed through:
      * DSP-1/2/3/4 (dsp.c), SuperFX/GSU (fxinst.c/fxemu.c), C4 (c4.c/c4emu.c),
-     * OBC1 (obc1.c), S-RTC (srtc.c) and SA-1 (sa1.c/sa1cpu.c) -- so Super Mario
-     * Kart, Pilotwings, Star Fox, Yoshi's Island, Mega Man X2/X3, Metal Combat,
-     * Dai Kaijuu Monogatari II, Super Mario RPG and Kirby Super Star all load.
-     * The S-DD1/SPC7110 decompressors have no implementation here (declared-
-     * only), so those carts still bail out. Note: SETA (ST01x) and BS-X are
-     * equally unimplemented but cannot be tested for -- InitROM never sets
+     * OBC1 (obc1.c), S-RTC (srtc.c), SA-1 (sa1.c/sa1cpu.c), and -- each behind
+     * its own CMake option -- the SPC7110 and its RTC-4513 (ENABLE_SPC7110,
+     * spc7110.c) and the S-DD1 (ENABLE_SDD1, sdd1.c). So Super Mario Kart,
+     * Pilotwings, Star Fox, Yoshi's Island, Mega Man X2/X3, Metal Combat, Dai
+     * Kaijuu Monogatari II, Super Mario RPG, Kirby Super Star, Tengai Makyou
+     * Zero, Street Fighter Alpha 2 and Star Ocean all load. With an option
+     * off, that chip's carts are refused here instead. Note: SETA (ST01x) and
+     * BS-X are unimplemented but cannot be tested for -- InitROM never sets
      * Settings.SETA/BS, so such carts slip through and run without the chip. */
-    if (Settings.SDD1 || Settings.SPC7110) {
+    if (false
+#if !ENABLE_SDD1
+        || Settings.SDD1
+#endif
+#if !ENABLE_SPC7110
+        || Settings.SPC7110
+#endif
+       ) {
         snprintf(ErrorMessage, ERRORMESSAGESIZE,
                  "Special chip ROMs not supported.");
         return false;
@@ -715,31 +1091,55 @@ static bool snes9x_load_rom_from_psram(uintptr_t psram_ptr, size_t romsize)
 }
 
 /* -------------------------------------------------------------------------
- * On-screen FPS overlay. Stamps the two-digit g_fps value into the top-left
- * of the freshly-rendered SNES frame (RGB555) after S9xMainLoop returns.
+ * On-screen FPS overlay. Stamps "NN RN FN" into the top-left of the freshly-
+ * rendered SNES frame (RGB555) after S9xMainLoop returns:
+ *   NN  frames emulated in the last ~1 s window (g_fps, 60 = full speed)
+ *   RN  HSTX video resyncs since boot (cumulative — they should stay rare)
+ *   FN  the frameskip in effect: frames skipped after each rendered one
+ *   Dn Hn  S-DD1 carts only: ms/s of core0 spent on the chip, and % of the
+ *          requested bytes served by its output cache (sdd1.c)
  * RENDER_TO_FB: target is the anchored framebuffer window (stride 320);
  * legacy: g_snes_private_screen (stride SNES_WIDTH) just before the blit,
  * so it rides along with it (incl. the core1 offload path) at no extra
- * sync cost. 8x8 font, white-on-black, cols 4..19 / overlay rows 0..7.
+ * sync cost. 8x8 font, white-on-black, from col 4 / overlay rows 0..7.
  *
  * Draws overlay font rows [font_first, font_last] into destination rows
  * [font_first - phys_base .. font_last - phys_base]. Full-overlay callers pass
  * (0, 7, 0); the strip hook passes a sub-range so it can stamp only the rows a
  * given copy-out chunk publishes (see fps_overlay_strip_hook). */
 #define FPS_OVERLAY_ROWS 8   /* must match the font_last+1 used below */
+#define FPS_OVERLAY_COL  4   /* left margin, pixels */
+
+/* Frames skipped after each rendered frame; 0 = render every frame. The
+ * 256x224 blit + the snes9x renderer (RenderScreen/RenderLine/Draw*) is the
+ * single biggest non-CPU cost. Super FX and SA-1 games lean hardest on it, so
+ * they render 1 frame of every 3 (skip 2); all other games render every other
+ * frame (skip 1). Drives both the skip reload in run_emulator() and the F
+ * field of the overlay. */
+static inline int frameskip_count(void)
+{
+    return settings.flags.frameSkip ? ((Settings.SuperFX || Settings.SA1) ? 2 : 1) : 0;
+}
+
+/* The overlay text, rebuilt once per second by the window in run_emulator().
+ * The draw below runs per rendered frame (per copy-out chunk, even), so it
+ * stays a plain glyph blit — no formatting in the hot path. Written and read
+ * on core0 only, so no locking. */
+static char g_fps_text[24] = "60 R0 F0";
+
 static void draw_fps_overlay(uint16_t *screen, int stride,
                              int font_first, int font_last, int phys_base)
 {
     const uint16_t fg = 0x7FFF;  /* white, RGB555 */
     const uint16_t bg = 0x0000;  /* black         */
-    char d0 = (char)('0' + (g_fps / 10) % 10);
-    char d1 = (char)('0' + (g_fps % 10));
+    int maxchars = (stride - FPS_OVERLAY_COL) / FONT_CHAR_WIDTH;
+    if (maxchars > (int)sizeof(g_fps_text) - 1) maxchars = (int)sizeof(g_fps_text) - 1;
     for (int row = font_first; row <= font_last; row++) {
-        uint16_t *dst = screen + (row - phys_base) * stride + 4;
-        char s0 = getcharslicefrom8x8font(d0, row);  /* LSB = leftmost pixel */
-        char s1 = getcharslicefrom8x8font(d1, row);
-        for (int b = 0; b < 8; b++) { *dst++ = (s0 & 1) ? fg : bg; s0 >>= 1; }
-        for (int b = 0; b < 8; b++) { *dst++ = (s1 & 1) ? fg : bg; s1 >>= 1; }
+        uint16_t *dst = screen + (row - phys_base) * stride + FPS_OVERLAY_COL;
+        for (int i = 0; i < maxchars && g_fps_text[i]; i++) {
+            char sl = getcharslicefrom8x8font(g_fps_text[i], row); /* LSB = leftmost pixel */
+            for (int b = 0; b < 8; b++) { *dst++ = (sl & 1) ? fg : bg; sl >>= 1; }
+        }
     }
 }
 
@@ -766,10 +1166,22 @@ static void fps_overlay_strip_hook(uint16_t *strip, int stride,
 /* -------------------------------------------------------------------------
  * Cartridge battery SRAM persistence. snes9x keeps the save in Memory.SRAM;
  * the real battery size is Memory.SRAMMask+1 when Memory.SRAMSize>0 (and there
- * is no battery when SRAMSize==0). S-RTC carts now load, but snes9x only writes
- * its RTC trailer past the battery in S9xSRTCPreSaveState, which this port never
- * calls (no save states) -- so there is still no trailer to persist, and the
- * in-game clock restarts each power cycle. Saves live in /SAVES/SNES/<rom>.SAV.
+ * is no battery when SRAMSize==0). Saves live in /SAVES/SNES/<rom>.SAV.
+ *
+ * SPC7110 carts (Tengai Makyou Zero) additionally carry an RTC-4513, and this
+ * board has no clock to seed it from. The chip therefore starts unset, which
+ * is what a dead cart battery looks like and makes the game run its own "set
+ * the date" prompt; what the player enters is kept in a 32-byte trailer
+ * appended after the battery region here. The trailer is written only when
+ * Settings.SPC7110RTC, so no other cart's .SAV changes size, and it is only
+ * read back when the file is exactly battery+trailer long and the magic and
+ * checksum both agree -- an .SAV from an older build (or from another
+ * emulator) simply has no trailer and the game prompts again. The clock does
+ * not advance while the board is off; without an RTC chip it cannot.
+ *
+ * snes9x's own S9xSRTCPreSaveState trailer (srtc.c, the Sharp S-RTC used by
+ * Dai Kaijuu Monogatari II) is a different chip and is still never called --
+ * that clock does still restart each power cycle.
  *
  * FIL (~550 B, embeds a 512 B sector window) and FILINFO (~276 B) are far too
  * large for the 3 KB core0 stack (PICO_STACK_SIZE) — allocate them in PSRAM via
@@ -784,6 +1196,42 @@ static void snes_sram_path(char *out, size_t n)
     Frens::stripextensionfromfilename(base);
     snprintf(out, n, "%s/%s.SAV", SNES_SAVE_DIR, base);
 }
+
+#if ENABLE_SPC7110
+/* 32 bytes: magic, version, the 20 RTC registers, and a checksum over the
+ * lot. Fixed size and self-describing, so a truncated or corrupt trailer is
+ * rejected rather than injecting garbage BCD into the chip. */
+#define SNES_RTC_TRAILER_SIZE 32
+#define SNES_RTC_TRAILER_MAGIC "S7RT"
+
+static uint32_t snes_rtc_trailer_sum(const uint8_t *t)
+{
+    uint32_t sum = 0;
+    for (int i = 0; i < SNES_RTC_TRAILER_SIZE - 4; i++)
+        sum = (sum << 1) + (sum >> 31) + t[i];
+    return sum;
+}
+
+static void snes_rtc_trailer_build(uint8_t *t)
+{
+    memset(t, 0, SNES_RTC_TRAILER_SIZE);
+    memcpy(t, SNES_RTC_TRAILER_MAGIC, 4);
+    t[4] = 1;                                   /* version */
+    S9xSPC7110RTCExport(t + 8);                 /* 20 bytes */
+    uint32_t sum = snes_rtc_trailer_sum(t);
+    t[28] = (uint8_t)sum;         t[29] = (uint8_t)(sum >> 8);
+    t[30] = (uint8_t)(sum >> 16); t[31] = (uint8_t)(sum >> 24);
+}
+
+static bool snes_rtc_trailer_valid(const uint8_t *t)
+{
+    if (memcmp(t, SNES_RTC_TRAILER_MAGIC, 4) != 0) return false;
+    if (t[4] != 1) return false;
+    uint32_t sum = snes_rtc_trailer_sum(t);
+    return t[28] == (uint8_t)sum       && t[29] == (uint8_t)(sum >> 8)
+        && t[30] == (uint8_t)(sum >> 16) && t[31] == (uint8_t)(sum >> 24);
+}
+#endif /* ENABLE_SPC7110 */
 
 static void snes_load_sram(void)
 {
@@ -808,6 +1256,22 @@ static void snes_load_sram(void)
             printf("SRAM: loaded %u bytes from %s\n", (unsigned)br, path);
         else
             printf("SRAM: read error %s\n", path);
+#if ENABLE_SPC7110
+        /* The RTC trailer sits immediately after the battery region. Anything
+         * shorter is a pre-trailer save and leaves the clock unset. */
+        if (Settings.SPC7110RTC && fno->fsize >= sz + SNES_RTC_TRAILER_SIZE) {
+            uint8_t trailer[SNES_RTC_TRAILER_SIZE];
+            UINT tr = 0;
+            if (f_lseek(file, sz) == FR_OK &&
+                f_read(file, trailer, sizeof(trailer), &tr) == FR_OK &&
+                tr == sizeof(trailer) && snes_rtc_trailer_valid(trailer)) {
+                S9xSPC7110RTCImport(trailer + 8);
+                printf("SRAM: RTC-4513 restored from %s\n", path);
+            } else {
+                printf("SRAM: RTC trailer rejected in %s\n", path);
+            }
+        }
+#endif
         f_close(file);
     } else {
         printf("SRAM: cannot open %s for read\n", path);
@@ -833,6 +1297,18 @@ static void snes_save_sram(void)
             printf("SRAM: saved %u bytes to %s\n", (unsigned)bw, path);
         else
             printf("SRAM: write error %s\n", path);
+#if ENABLE_SPC7110
+        if (Settings.SPC7110RTC) {
+            uint8_t trailer[SNES_RTC_TRAILER_SIZE];
+            UINT tw = 0;
+            snes_rtc_trailer_build(trailer);
+            if (f_write(file, trailer, sizeof(trailer), &tw) == FR_OK &&
+                tw == sizeof(trailer))
+                printf("SRAM: RTC-4513 trailer appended\n");
+            else
+                printf("SRAM: RTC trailer write error\n");
+        }
+#endif
         f_close(file);
     } else {
         printf("SRAM: cannot open %s for write\n", path);
@@ -909,6 +1385,9 @@ static void run_emulator(void)
             msu1_park();
 #endif
             int r = showSettingsMenu(true);
+            /* Whatever button confirmed the menu item is probably still down.
+             * Do not let the game see it -- see g_pad_ignore_request. */
+            g_pad_ignore_request = true;
             if (r == 3) {
 #if 0
                 if ((clock_get_hz(clk_sys) / 1000) > EMULATOR_CLOCKFREQ_KHZ)
@@ -931,6 +1410,14 @@ static void run_emulator(void)
                 return;
             }
             if (r == 5) {
+                /* Flush the battery save first. Memory.SRAM survives
+                 * S9xReset, so this is not needed for the reset itself — but
+                 * SPC7110 carts run a multi-stage power-on self-test whose
+                 * progress lives in cart SRAM, and the player is expected to
+                 * reset between stages. Without a flush here, pulling power
+                 * after a reset loses that progress and the cart starts the
+                 * diagnostic over. Cheap: one SD write per explicit reset. */
+                snes_save_sram();
                 /* Reset game. Do it while the mixer is still parked —
                  * S9xReset reinitializes the APU/DSP state core1 mixes
                  * from. playback_rate is untouched, so audio survives. */
@@ -983,7 +1470,24 @@ static void run_emulator(void)
         bool rendered_this_frame = IPPU.RenderThisFrame;
         uint32_t t2 = time_us_32();
 #endif
+#if HSTX && RENDER_TO_FB
+        const bool rendering = IPPU.RenderThisFrame;
+        if (rendering)
+            s9x_port_tear_frame_begin();
+#endif
         S9xMainLoop();
+#if HSTX && RENDER_TO_FB
+        if (rendering) {
+            int32_t psi_mid;
+            bool    torn;
+            if (s9x_port_tear_frame_end(&psi_mid, &torn)) {
+#if PACE_VSYNC_PHASE
+                if (!Settings.PAL)
+                    pace_note_frame(psi_mid, torn);
+#endif
+            }
+        }
+#endif
 #if PROFILE_BUCKETS
         uint32_t t3 = time_us_32();
         {
@@ -1029,16 +1533,20 @@ static void run_emulator(void)
 #endif
 
         if (skipFrames == 0) {
-            /* frameSkip=true → skip frames to buy back frame budget. The
-             * 256x224 blit + the snes9x renderer (RenderScreen/RenderLine/
-             * Draw*) is the single biggest non-CPU cost. Super FX games
-             * lean hardest on it, so they render 1 frame of every 3
-             * (skip 2); all other games render every other frame (skip 1). */
-            skipFrames = settings.flags.frameSkip ? (Settings.SuperFX ? 2 : 1) : 0;
+            /* frameSkip=true → skip frames to buy back frame budget. */
+            skipFrames = (uint8_t)frameskip_count();
         } else {
             skipFrames--;
         }
 
+#if ENABLE_SPC7110 && !SPC7110_FREEZE_RTC
+        /* Advance the SPC7110's RTC-4513 on real elapsed time. Upstream
+         * counts frames and assumes 60 of them per second; this port does not
+         * reliably hit 60 and can be running frameskip, so a frame-counted
+         * clock would run slow by however far behind the emulator is. A no-op
+         * for every cart without the chip. */
+        S9xSPC7110RTCTick(time_us_64());
+#endif
 #if ENABLE_MSU1
         /* Every MSU-1 SD access happens here — the deferred track open and
          * the ring refill (~2949 B/frame while a track plays). Placed at the
@@ -1054,7 +1562,7 @@ static void run_emulator(void)
         uint32_t t5 = time_us_32(); prof_us_pump += (t5 - t4);
         if (!g_prof_bypass_pace)
 #endif
-        paceFrame(false);
+        paceFrame(false, skipFrames == 0);
 #if PROFILE_BUCKETS
         uint32_t t6 = time_us_32(); prof_us_pace += (t6 - t5);
 #endif
@@ -1107,6 +1615,56 @@ static void run_emulator(void)
         else if (now - fps_t0_us >= 1000000) {
             uint32_t delta = frame - fps_f0;
             g_fps = delta;
+            /* Overlay line: fps, cumulative video resyncs, frameskip in
+             * effect. Resyncs are a since-boot total on purpose — they are
+             * rare, and a per-second value would blink past unnoticed. */
+            {
+                int resyncs = 0;
+#if HSTX
+                resyncs = get_video_output_resync_count();
+#endif
+                int n = snprintf(g_fps_text, sizeof(g_fps_text), "%02lu R%d F%d",
+                                 (unsigned long)(delta > 99 ? 99 : delta), resyncs,
+                                 frameskip_count());
+#if ENABLE_SDD1
+                /* S-DD1 carts append "Dn Hn": ms of core0 time this second
+                 * spent on the chip, and % of the requested bytes the output
+                 * cache supplied ("H-" when the game asked for nothing). */
+                uint32_t sd_us, sd_req, sd_dec;
+                if (n > 0 && n < (int)sizeof(g_fps_text) &&
+                    sdd1_take_stats(&sd_us, &sd_req, &sd_dec)) {
+                    if (sd_req)
+                        snprintf(g_fps_text + n, sizeof(g_fps_text) - n, " D%lu H%lu",
+                                 (unsigned long)((sd_us + 500) / 1000),
+                                 (unsigned long)((uint64_t)(sd_req - sd_dec) * 100 / sd_req));
+                    else
+                        snprintf(g_fps_text + n, sizeof(g_fps_text) - n, " D%lu H-",
+                                 (unsigned long)((sd_us + 500) / 1000));
+                }
+#endif
+            }
+#if TEAR_STATS && HSTX && RENDER_TO_FB
+            {
+                /* Tear guard health: rendered frames, how many reached the
+                 * screen torn, strips that waited for the beam (and for how
+                 * long in total), the widest psi range (> one refresh, i.e.
+                 * the line count, cannot be placed tear-free) and the start
+                 * phase the pacer is holding, in lines after the vsync tick. */
+                uint32_t tf, tt, tw, twu, tspan;
+                s9x_port_tear_stats(&tf, &tt, &tw, &twu, &tspan);
+                long phase = -1;
+#if PACE_VSYNC_PHASE
+                if (!Settings.PAL) {
+                    int32_t p = (int32_t)(pace_slot - video_frame_count * (uint32_t)PACE_LINES)
+                                % PACE_LINES;
+                    phase = p < 0 ? p + PACE_LINES : p;
+                }
+#endif
+                printf("tear: frames=%lu torn=%lu waits=%lu wait=%luus span=%lu phase=%ld\n",
+                       (unsigned long)tf, (unsigned long)tt, (unsigned long)tw,
+                       (unsigned long)twu, (unsigned long)tspan, phase);
+            }
+#endif
 #if PROFILE_BUCKETS
             uint32_t d  = delta ? delta : 1;
             uint32_t dr = prof_frames_r ? prof_frames_r : 1;
@@ -1134,6 +1692,9 @@ static void run_emulator(void)
             if (!audio_route_to_ext())
 #endif
             {
+#if AUDIO_WATCHDOG
+                audio_watchdog_tick();
+#endif
                 uint32_t ur = hstx_di_queue_get_underrun_count();
                 /* Only chatter when audio health is abnormal. minlvl is
                  * DI packets (4 samples each); watermark is 200. */
@@ -1183,6 +1744,11 @@ int main()
         CPUFreqKHz = flashParams->cpuFreqKHz;
         voltage = flashParams->voltage;
     }
+#else
+    // No overclock here, but the menu still compares the live clock with these
+    // limits whenever settings are saved. Left at the pico_shared defaults
+    // (252 MHz) that check rewrote FlashParams and rebooted on every save.
+    Frens::setOverclockLimits(EMULATOR_CLOCKFREQ_KHZ, EMULATOR_CLOCKFREQ_KHZ, voltage, voltage);
 #endif   
     Frens::setClocksAndStartStdio(CPUFreqKHz, voltage);
     Frens::dumpHeapStats("startup");
@@ -1214,6 +1780,10 @@ int main()
     isFatalError = !Frens::initAll(selectedRom, CPUFreqKHz, 0, 0,
                                    AUDIOBUFFERSIZE, false, true);
     Frens::dumpHeapStats("after-initAll");
+#if HSTX && RENDER_TO_FB
+    /* Start tracking the scan-out beam for the strip tear guard. */
+    s9x_port_beam_install();
+#endif
 
 #if HSTX
     /* Override the 44.1 kHz default that hstx_init() in pico_shared
@@ -1231,7 +1801,36 @@ int main()
      * (watchdog_reboot in run_emulator) — it should feel like a snappy return
      * to the ROM menu, not a fresh power-on. A cold/power-on boot still shows
      * it (watchdog_caused_reboot() is false then). */
+    /* Resume after a ROM-to-flash write. Writing a 7 MB cart means holding
+     * interrupts off for a few hundred ms at a time, once per 64 KB erase --
+     * and on PIO USB boards the host controller cannot survive that: the
+     * gamepad stops producing valid reports ("Invalid DS4 report size 0") and
+     * does not come back. Rather than try to nurse the USB stack through it,
+     * reboot once the write is done -- USB, core1 and the QMI all come back
+     * clean -- and pick the cart straight back up here so the user still only
+     * chose it once. scratch[5] is free: [4] is clobbered by watchdog_reboot,
+     * [6]/[7] are the bootloader handshake (FrensHelpers.cpp). */
     bool showSplash = !watchdog_caused_reboot();
+    bool resumedFromFlashWrite = false;
+    if (watchdog_hw->scratch[SNES_RESUME_SCRATCH] == SNES_RESUME_MAGIC) {
+        watchdog_hw->scratch[SNES_RESUME_SCRATCH] = 0;
+        /* The path comes from the flash record, NOT from ROMINFOFILE. That
+         * file lives at the SD root and every Frens emulator writes it, so it
+         * routinely names another console's cart -- resuming from it once
+         * flashed a 384 KB NES ROM into the SNES region and then boot-looped.
+         * The record is written by the very write we are resuming from, so it
+         * is both SNES-specific and exactly right. */
+        const char *rec = snes_romflash_recorded_path();
+        if (rec && rec[0]) {
+            strncpy(selectedRom, rec, sizeof(selectedRom) - 1);
+            selectedRom[sizeof(selectedRom) - 1] = 0;
+            resumedFromFlashWrite = true;
+            showSplash = false;
+            printf("romflash: resuming %s after the flash write\n", selectedRom);
+        } else {
+            printf("romflash: resume asked for, but the record is invalid\n");
+        }
+    }
 
     while (true) {
         if (selectedRom[0] == 0) {
@@ -1266,11 +1865,116 @@ int main()
             f_close(fil);
         }
         Frens::f_free(fil);
-        if (!ROM_FILE_ADDR || !romsize) {
+        if (!romsize) {
             strcpy(ErrorMessage, "ROM load failed");
             selectedRom[0] = 0;
             continue;
         }
+
+        /* ROM_FILE_ADDR == 0 with a valid size means the framework did not
+         * preload the cart -- either it skipped it (file larger than
+         * availMem - 512 KB) or the allocation failed outright. The latter is
+         * routine for a 7 MB cart after a couple of games: lwmem allocates
+         * next-fit and GetAvailableMemory() reports total free bytes rather
+         * than the largest run, so the arena can report 8 MB free and still
+         * not hold 7 MB contiguously. Either way the cart runs from XIP flash
+         * instead, which is where it was headed anyway. */
+        uintptr_t rom_addr   = ROM_FILE_ADDR;
+        bool      rom_in_flash = false;
+
+        /* The framework preloads any ROM that fits PSRAM -- but merely fitting
+         * is not enough. snes9x still needs ~1.04 MB after the ROM for
+         * Memory.RAM/VRAM/SRAM, TileCache, FillRAM, the sound LocalState, the
+         * render strips and the sprite line buffer. Measured on the 7 MB
+         * Tengai Makyou Zero patch: the preload leaves exactly 1023 KB and the
+         * last allocation in S9xInitDisplay (s9x_port_objonline, ~30 KB) comes
+         * back NULL -- the session dies with "Display init failed" after the
+         * ROM has already been read off the card.
+         *
+         * So decide on the working set, not on the ROM alone: if too little
+         * PSRAM would be left, drop the preloaded copy and run the cart from
+         * XIP flash instead (romflash.h), which frees the whole 8 MB for the
+         * emulator. A 4 MB cart leaves ~4 MB and is untouched by this. */
+        if (rom_addr) {
+            uint freeAfterPreload = Frens::GetAvailableMemory();
+            size_t need = snes_psram_working_set();
+            if (freeAfterPreload < need) {
+                printf("romflash: %u KB PSRAM left after preloading %u KB, "
+                       "emulator needs %u KB - running this cart from flash\n",
+                       (unsigned)(freeAfterPreload / 1024),
+                       (unsigned)(romsize / 1024),
+                       (unsigned)(need / 1024));
+                Frens::f_free((void *)rom_addr);
+                ROM_FILE_ADDR = 0;
+                rom_addr      = 0;
+            }
+        }
+
+        if (!rom_addr) {
+            /* Drop anything the framework left in ErrorMessage. If the preload
+             * failed it will hold "Cannot allocate ... bytes in PSRAM", which
+             * is not an error here -- running this cart from flash is the plan.
+             * Left set, it surfaces on the menu later: most visibly when the
+             * user declines the write below and gets a PSRAM complaint about a
+             * cart the emulator never intended to keep in PSRAM. Anything
+             * genuinely wrong from here on sets its own message. */
+            ErrorMessage[0] = 0;
+
+            if (romsize > snes_romflash_capacity()) {
+                snprintf(ErrorMessage, ERRORMESSAGESIZE, "ROM too large");
+                selectedRom[0] = 0;
+                continue;
+            }
+
+            /* Write it if it is not already there. On the launch we rebooted
+             * into, skip the check entirely: the image was verified against
+             * the source moments ago and the record is that proof, so
+             * re-CRCing 7 MB would only cost time -- and under
+             * ROMFLASH_FORCE_REWRITE holds() always answers "no", which would
+             * otherwise rewrite, reboot, and land right back here: a boot
+             * loop, and a testing build that can never reach the game. */
+            if (!resumedFromFlashWrite && !snes_romflash_holds(selectedRom, romsize)) {
+                /* Ask first. This is a minute of the console being unusable
+                 * and a write to the board's flash, so it should never be a
+                 * surprise -- and the user may simply have picked the wrong
+                 * cart. No means straight back to the menu, nothing written. */
+                const char *shortName = Frens::GetfileNameFromFullPath(selectedRom);
+                char sizeLine[40];
+                snprintf(sizeLine, sizeof(sizeLine), "%u KB - takes about a minute",
+                         (unsigned)(romsize / 1024));
+                if (!menuConfirmPrompt("This cart is too big for RAM and",
+                                       "must be written to flash first.",
+                                       sizeLine)) {
+                    printf("romflash: user declined the write\n");
+                    selectedRom[0] = 0;
+                    continue;
+                }
+
+                /* Leave a notice on screen; the bar is drawn over it. */
+                menuNoticeScreen("Writing to flash memory", shortName,
+                                 "Do not power off.",
+                                 "The console restarts when done.");
+                progress_bar_draw(0, 100, PB_COL_FILL, PB_COL_EMPTY, PB_COL_BORDER);
+
+                if (!snes_romflash_program(selectedRom, romsize,
+                                           snes_romflash_progress)) {
+                    snprintf(ErrorMessage, ERRORMESSAGESIZE, "Flash write failed");
+                    selectedRom[0] = 0;
+                    continue;
+                }
+                /* Written and verified. Reboot to get a clean USB host back
+                 * (see SNES_RESUME_SCRATCH above) and resume this cart there;
+                 * the record then names it and it starts straight from XIP. */
+                printf("romflash: rebooting to restore USB, then resuming\n");
+                watchdog_hw->scratch[SNES_RESUME_SCRATCH] = SNES_RESUME_MAGIC;
+                watchdog_reboot(0, 0, 0);
+                while (true) tight_loop_contents();
+            }
+
+            rom_addr     = (uintptr_t)snes_romflash_image();
+            rom_in_flash = true;
+        }
+        resumedFromFlashWrite = false;
 
         ErrorMessage[0] = 0;
 
@@ -1294,7 +1998,7 @@ int main()
         S9xSetPlaybackRate(SNES_AUDIO_HZ);
         Frens::dumpHeapStats("after-Sound");
 
-        if (!snes9x_load_rom_from_psram(ROM_FILE_ADDR, romsize)) {
+        if (!snes9x_load_rom(rom_addr, romsize, rom_in_flash)) {
             S9xDeinitSound();
             S9xDeinitAPU();
             S9xDeinitMemory();
@@ -1329,6 +2033,9 @@ int main()
         S9xDeinitSound();
         S9xDeinitAPU();
         S9xDeinitMemory();
+#if ENABLE_SDD1
+        sdd1_dma_free();   /* no-op unless an S-DD1 cart was loaded */
+#endif
         Frens::dumpHeapStats("after-deinit");
 
         selectedRom[0] = 0;

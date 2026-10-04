@@ -120,6 +120,17 @@ void S9xAPUSetEndOfSample(int32_t i, Channel* ch)
 {
    ch->state = SOUND_SILENT;
    ch->mode = MODE_NONE;
+   /* A silenced voice must report a zero envelope too. ENVX is read back live
+    * from ch->envx (S9xGetAPUDSP), so leaving the last value in place makes a
+    * finished voice claim it is still sounding, forever. Drivers that poll
+    * ENVX to find out when a note has ended then wait for something that can
+    * never happen -- Tengai Makyou Zero's driver does exactly that, per voice
+    * ("MOV Y,#8 / PCALL $FF24 / CMP A,#3 / BCS"), and its music stops for good
+    * the first time a voice runs out under the poll. */
+   ch->envx  = 0;
+   ch->envxx = 0;
+   ch->left_vol_level  = 0;
+   ch->right_vol_level = 0;
    APU.DSP [APU_ENDX] |= 1 << i;
    APU.DSP [APU_KON] &= ~(1 << i);
    APU.DSP [APU_KOFF] &= ~(1 << i);
@@ -264,7 +275,7 @@ void S9xSetSoundKeyOff(int32_t channel)
    }
 }
 
-void S9xFixSoundAfterSnapshotLoad()
+S9X_COLD_INIT void S9xFixSoundAfterSnapshotLoad()
 {
    int32_t i;
 
@@ -985,7 +996,7 @@ void S9xResetSound(bool full)
    memset(MixOutputPrev, 0, sizeof(MixOutputPrev));
 }
 
-void S9xSetPlaybackRate(uint32_t playback_rate)
+S9X_COLD_INIT void S9xSetPlaybackRate(uint32_t playback_rate)
 {
    int32_t i;
 
@@ -1026,7 +1037,7 @@ void S9xSetPlaybackRate(uint32_t playback_rate)
       S9xSetSoundFrequency(i, SoundData.channels [i].hertz);
 }
 
-bool S9xInitSound(int32_t buffer_ms, int32_t lag_ms)
+S9X_COLD_INIT bool S9xInitSound(int32_t buffer_ms, int32_t lag_ms)
 {
    /* Pico port: LocalState is ~120 KB (Echo[24000] alone is 96 KB).
     * Lives in PSRAM — audio mix runs at sample rate, not opcode rate. */
@@ -1039,7 +1050,7 @@ bool S9xInitSound(int32_t buffer_ms, int32_t lag_ms)
    return true;
 }
 
-void S9xDeinitSound(void)
+S9X_COLD_INIT void S9xDeinitSound(void)
 {
    if (LocalState)
    {

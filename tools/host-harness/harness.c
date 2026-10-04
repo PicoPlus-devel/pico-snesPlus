@@ -17,6 +17,12 @@
  *
  * Env: TRACE_FROM=<frame> logs strip chunk ranges (fb1) and PPU registers
  * per frame from that frame on.
+ *
+ * LIVE=1 (any variant, when built with SDL2) shows the frames in a window,
+ * plays the audio and reads the keyboard as the pad, paced to real time
+ * (harness_sdl.c). PAD_REC=<file> records the pad and resets per frame and
+ * PAD_PLAY=<file> replays them, so a live session reproduces exactly in a
+ * headless run. See README.md.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,12 +37,48 @@
 #include "ppu.h"
 #include "soundux.h"
 #include "display.h"
+#include "cpuexec.h"
+#include "apu.h"
+#include "spc7110.h"
 #include "port_alloc.h"
+#include <time.h>
+#if ENABLE_SPC7110
+#include "spc7110.h"
+#endif
+#if ENABLE_SDD1
+#include "sdd1.h"
+#endif
+#if HARNESS_SDL
+#include "harness_sdl.h"
+#endif
+
+/* LIVE=1: window, audio and keyboard through harness_sdl.c. */
+static int live_on;
 
 /* ---- allocator: both tiers are plain malloc on the host -------------- */
 void *port_alloc_sram(size_t bytes)  { return malloc(bytes); }
 void *port_alloc_psram(size_t bytes) { return malloc(bytes); }
 void  port_alloc_free(void *p)       { free(p); }
+
+/* ---- audio: mix the way the device does ------------------------------ */
+/* S9xMixSamples works in soundux.c's static MixBuffer/EchoBuffer, which hold
+ * SOUND_BUFFER_SIZE (1321) int32 slots. The device never asks for more than
+ * 64 stereo frames per call (core1_mix_task; 256 on the core0 pump). The
+ * harness used to mix a whole video frame at once -- 735 frames, 1470 slots --
+ * which ran off the end of both buffers into the echo FIR taps and the
+ * envelope rate tables: the echo then fed back to full scale (Zelda's title
+ * music pinned at +/-32767) and envelopes, which the SPC700 driver reads back
+ * through ENVX, went wrong too. Chunk it exactly like core1_mix_task. */
+#define HARNESS_MIX_CHUNK 64
+static void harness_mix(int16_t *buf, int frames)
+{
+    while (frames > 0) {
+        int n = frames > HARNESS_MIX_CHUNK ? HARNESS_MIX_CHUNK : frames;
+        S9xMixSamples(buf, n * 2);
+        buf    += n * 2;
+        frames -= n;
+    }
+}
 
 /* ---- MSU-1 backend: stdio stand-in for msu1_port.cpp's FatFs ---------- */
 #if ENABLE_MSU1
@@ -135,7 +177,15 @@ void msu1_backend_close(void)
 #endif /* ENABLE_MSU1 */
 
 /* ---- input / peripheral stubs ---------------------------------------- */
-uint32_t S9xReadJoypad(int32_t port) { (void)port; return 0; }
+/* Scripted pad. S9xUpdateJoypads (ppu.c) refills IPPU.Joypads from here every
+ * frame, so this — not a direct write to IPPU.Joypads — is the hook.
+ *   PAD_AUTO=n   tap Start+A+B every n frames (PAD_HOLD frames, default 8)
+ * Enough to walk a title screen or a boot self-test that waits on a press. */
+uint32_t harness_pad0;
+uint32_t S9xReadJoypad(int32_t port)
+{
+    return port == 0 ? harness_pad0 : 0;
+}
 
 /* Scripted SNES Mouse (env MOUSE=1): circles the cursor around screen
  * center (so deltas keep flowing however long the run) and holds the left
@@ -281,18 +331,31 @@ static void write_ppm(const char *path, const uint16_t *px,
     fclose(f);
 }
 
+/* The last rendered frame: the whole 320x240 framebuffer on the strip path,
+ * the native SNES image (512 wide after hi-res) on the classic one. Shared by
+ * the PPM dump and the live window so both always show the same pixels. */
+static const uint16_t *frame_pixels(int *w, int *h, int *pitch_px)
+{
+#if RENDER_TO_FB
+    *w = FB_WIDTH;
+    *h = FB_HEIGHT;
+    *pitch_px = FB_WIDTH;
+    return host_fb;
+#else
+    *w = IPPU.RenderedScreenWidth ? (int)IPPU.RenderedScreenWidth : SNES_WIDTH;
+    *h = PPU.ScreenHeight ? PPU.ScreenHeight : SNES_HEIGHT;
+    *pitch_px = GFX.Pitch / 2;
+    return (const uint16_t *)GFX.Screen;
+#endif
+}
+
 static void dump_frame(const char *dir, const char *tag, uint32_t frame)
 {
     char path[512];
+    int w, h, pitch_px;
+    const uint16_t *px = frame_pixels(&w, &h, &pitch_px);
     snprintf(path, sizeof path, "%s/%s_f%05u.ppm", dir, tag, frame);
-#if RENDER_TO_FB
-    write_ppm(path, host_fb, FB_WIDTH, FB_HEIGHT, FB_WIDTH);
-#else
-    write_ppm(path, (const uint16_t *)GFX.Screen,
-              IPPU.RenderedScreenWidth ? (int)IPPU.RenderedScreenWidth : SNES_WIDTH,
-              PPU.ScreenHeight ? PPU.ScreenHeight : SNES_HEIGHT,
-              GFX.Pitch / 2);
-#endif
+    write_ppm(path, px, w, h, pitch_px);
 }
 
 /* ---- scripted MSU-1 driver --------------------------------------------- */
@@ -378,7 +441,7 @@ static void msu_drive(uint32_t frame)
 static void msu_mix_frame(void)
 {
     const int frames = (int)((uint64_t)44100 * msu_frame_us / 1000000u);
-    S9xMixSamples(msu_mixbuf, frames * 2);
+    harness_mix(msu_mixbuf, frames);
     for (int i = 0; i < frames * 2; i++) {
         int v = msu_mixbuf[i] < 0 ? -msu_mixbuf[i] : msu_mixbuf[i];
         if (v > msu_peak_snes) msu_peak_snes = v;
@@ -390,15 +453,260 @@ static void msu_mix_frame(void)
     }
     if (msu_audio_out)
         fwrite(msu_mixbuf, sizeof(int16_t), (size_t)frames * 2, msu_audio_out);
+#if HARNESS_SDL
+    if (live_on)
+        hsdl_audio(msu_mixbuf, frames);
+#endif
 }
 #endif /* ENABLE_MSU1 */
 
 /* ---- main --------------------------------------------------------------- */
+/* Audio trace (AUDIODBG=<frames between reports>). Mixes one video frame's
+ * worth of samples per frame at the real-time rate, exactly the way
+ * core1_mix_task does on device, and reports the state that decides whether
+ * anything is audible. This is here to reproduce the Tengai "music fades to
+ * silence after a fixed time" fault off-hardware: the failure scales with how
+ * much mixing actually happens, so a harness that mixes at the right rate
+ * should show it too. */
+static int16_t adbg_buf[1600 * 2];
+static int      adbg_peak;
+static uint32_t adbg_mixed;
+static FILE    *adbg_audio_out;    /* AUDIO_OUT without MSU-1 */
+
+/* Mix one video frame of audio: 735 samples at 60 fps, 882 for a PAL game at
+ * 50. Runs whenever something consumes audio -- AUDIODBG, the live window,
+ * or input record/replay -- and not otherwise, so plain headless runs stay
+ * exactly as they were. The mixer is part of the emulated machine (the sound
+ * driver reads back ENVX/ENDX, which mixing advances), so a recording must
+ * be replayed with mixing on exactly as it was recorded. */
+static void mix_frame(void)
+{
+    const int n = 44100 / (Settings.PAL ? 50 : 60);
+    harness_mix(adbg_buf, n);
+    adbg_mixed += n;
+    for (int i = 0; i < n * 2; i++) {
+        int v = adbg_buf[i] < 0 ? -adbg_buf[i] : adbg_buf[i];
+        if (v > adbg_peak) adbg_peak = v;
+    }
+    if (adbg_audio_out)
+        fwrite(adbg_buf, sizeof(int16_t), (size_t)n * 2, adbg_audio_out);
+#if HARNESS_SDL
+    if (live_on)
+        hsdl_audio(adbg_buf, n);
+#endif
+}
+
+static void adbg_frame(uint32_t frame, uint32_t every)
+{
+#if AUDIO_WATCHDOG
+    {   /* DSPLOG=<from>,<to>: trace DSP writes across the stall. */
+        extern int g_dsp_log_on;
+        const char *d = getenv("DSPLOG");
+        if (d) {
+            uint32_t a = (uint32_t)strtoul(d, NULL, 0);
+            const char *c = strchr(d, ',');
+            uint32_t b = c ? (uint32_t)strtoul(c + 1, NULL, 0) : a;
+            g_dsp_log_on = (frame >= a && frame <= b);
+        }
+    }
+#endif
+    mix_frame();
+    if (frame % every) return;
+
+#if AUDIO_WATCHDOG
+    extern uint32_t g_apu_kon_writes, g_apu_kon_bits;
+    static uint32_t pk;
+    printf("f%-6u mixed=%-9lu peak=%-6d keyed=%02x ENDX=%02x FLG=%02x "
+           "KON(3s)=%-4lu bits=%02x |",
+           frame, (unsigned long)adbg_mixed, adbg_peak,
+           APU.KeyedChannels, APU.DSP[0x7c], APU.DSP[0x6c],
+           (unsigned long)(g_apu_kon_writes - pk), (unsigned)g_apu_kon_bits);
+    pk = g_apu_kon_writes; g_apu_kon_bits = 0;
+    {   /* Same fields the on-device watchdog prints, so a desktop run and a
+         * board run can be compared line for line. */
+        extern uint32_t g_apu_port_writes;
+        static uint32_t pw;
+        printf(" [pw=%-7lu SPC PC=%04x ports=%02x %02x %02x %02x tmr=%x/%x/%x]",
+               (unsigned long)(g_apu_port_writes - pw),
+               (unsigned)(IAPU.PC - IAPU.RAM),
+               APU.OutPorts[0], APU.OutPorts[1], APU.OutPorts[2], APU.OutPorts[3],
+               IAPU.RAM[0xfd], IAPU.RAM[0xfe], IAPU.RAM[0xff]);
+        pw = g_apu_port_writes;
+    }
+#else
+    printf("f%-6u mixed=%-9lu peak=%-6d keyed=%02x ENDX=%02x |",
+           frame, (unsigned long)adbg_mixed, adbg_peak,
+           APU.KeyedChannels, APU.DSP[0x7c]);
+#endif
+    printf(" v0regs:");
+    for (int r = 0; r < 8; r++) printf(" %02x", APU.DSP[r]);
+    printf(" |");
+    for (int v = 0; v < 8; v++)
+        printf(" %d:s%d/e%d", v, SoundData.channels[v].state,
+               SoundData.channels[v].envx);
+    printf("\n");
+
+    /* APUDUMP=<frame>: hex of the SPC700 code the driver is looping in, so the
+     * idle loop can be disassembled and its exit condition identified. */
+    {
+        const char *d = getenv("APUDUMP");
+        if (d && frame == (uint32_t)strtoul(d, NULL, 0)) {
+            static const uint32_t lo[] = { 0xff20, 0x2390, 0x1300, 0x0980 };
+            for (unsigned r = 0; r < sizeof lo / sizeof *lo; r++) {
+                for (uint32_t a = lo[r]; a < lo[r] + 0x40; a += 16) {
+                    printf("    %04x:", a);
+                    for (int i = 0; i < 16; i++) printf(" %02x", IAPU.RAM[a + i]);
+                    printf("\n");
+                }
+                printf("\n");
+            }
+        }
+    }
+    fflush(stdout);
+    adbg_peak = 0;
+}
+
+/* ---- input record / replay (PAD_REC / PAD_PLAY) ------------------------ */
+/* A recording is everything the machine was fed from outside: the port-1
+ * pad per frame and every reset, as text, one line per change:
+ *     <frame> <hexmask>        pad state from this frame on (PAD_MASK bits)
+ *     <frame> reset [wram]     soft reset at the start of this frame
+ *     <frame> end              the recording stopped before this frame
+ * '#' starts a comment. Frames never decrease. Written by PAD_REC from the
+ * effective pad (keyboard | PAD_AUTO) and all resets (RESET_AT, F5); read by
+ * PAD_PLAY, which replaces keyboard, PAD_AUTO and RESET_AT until "end". A
+ * file without "end" (written by hand) never ends: its last mask persists. */
+enum { PEV_PAD, PEV_RESET, PEV_RESET_WRAM, PEV_END };
+typedef struct { uint32_t frame; int kind; uint32_t mask; } pad_event;
+
+static pad_event *pplay;
+static size_t     pplay_n, pplay_i;
+static FILE      *prec;
+static uint32_t   prec_last;
+
+static const char *base_name(const char *p)
+{
+    const char *s = strrchr(p, '/');
+    return s ? s + 1 : p;
+}
+
+static int pad_play_load(const char *path, const char *self)
+{
+    FILE *fp = fopen(path, "r");
+    if (!fp) { perror(path); return 0; }
+    char line[512];
+    size_t cap = 0;
+    unsigned ln = 0;
+    uint32_t last = 0;
+    while (fgets(line, sizeof line, fp)) {
+        char *p = line, *e;
+        ln++;
+        while (*p == ' ' || *p == '\t') p++;
+        if (!strncmp(p, "# binary: ", 10)) {
+            /* Warn, don't refuse: replaying on another render path is how a
+             * renderer A/B is done, and only a different chip set changes
+             * the machine itself. */
+            p += 10;
+            p[strcspn(p, "\r\n")] = 0;
+            if (strcmp(p, base_name(self)))
+                fprintf(stderr, "PAD_PLAY: recorded with %s, replaying with %s -- "
+                        "exact only if both have the same chips\n", p, base_name(self));
+            continue;
+        }
+        if (*p == '#' || *p == '\n' || *p == '\r' || !*p) continue;
+        pad_event ev = { (uint32_t)strtoul(p, &e, 10), PEV_PAD, 0 };
+        if (e == p) {
+            fprintf(stderr, "%s:%u: expected a frame number\n", path, ln);
+            goto bad;
+        }
+        while (*e == ' ' || *e == '\t') e++;
+        if (!strncmp(e, "reset", 5)) {
+            ev.kind = strstr(e + 5, "wram") ? PEV_RESET_WRAM : PEV_RESET;
+        } else if (!strncmp(e, "end", 3)) {
+            ev.kind = PEV_END;
+        } else {
+            char *e2;
+            ev.mask = (uint32_t)strtoul(e, &e2, 16);
+            if (e2 == e) {
+                fprintf(stderr, "%s:%u: expected a hex pad mask or \"reset\"\n", path, ln);
+                goto bad;
+            }
+        }
+        if (ev.frame < last) {
+            fprintf(stderr, "%s:%u: frame %u comes after frame %u\n", path, ln,
+                    ev.frame, last);
+            goto bad;
+        }
+        last = ev.frame;
+        if (pplay_n == cap) {
+            cap = cap ? cap * 2 : 256;
+            pplay = realloc(pplay, cap * sizeof *pplay);
+            if (!pplay) { fprintf(stderr, "PAD_PLAY: out of memory\n"); goto bad; }
+        }
+        pplay[pplay_n++] = ev;
+    }
+    fclose(fp);
+    printf("PAD_PLAY: %zu events from %s, last at frame %u\n", pplay_n, path, last);
+    return 1;
+bad:
+    fclose(fp);
+    return 0;
+}
+
+static int pad_rec_open(const char *path, const char *self, const char *rompath)
+{
+    /* Settings that change the machine must match on replay; list the ones
+     * that are set so the replay command can be rebuilt from the file. */
+    static const char *const machine_env[] = {
+        "SRAM", "MOUSE", "MOUSE_CLICK", "MSU", "MSU_VOL", "MSU_REPEAT", "FPS",
+        "RTC_SPEED",
+    };
+    prec = fopen(path, "w");
+    if (!prec) { perror(path); return 0; }
+    fprintf(prec, "# pico_snesPlus host-harness input recording\n");
+    fprintf(prec, "# binary: %s\n", base_name(self));
+    fprintf(prec, "# rom: %s\n", rompath);
+    for (size_t i = 0; i < sizeof machine_env / sizeof *machine_env; i++)
+        if (getenv(machine_env[i]))
+            fprintf(prec, "# env: %s=%s\n", machine_env[i], getenv(machine_env[i]));
+    fprintf(prec, "# <frame> <hexmask> | <frame> reset [wram] | <frame> end\n");
+    return 1;
+}
+
+static void pad_rec_close(uint32_t frames_run)
+{
+    if (!prec) return;
+    fprintf(prec, "%u end\n", frames_run);
+    fclose(prec);
+    prec = NULL;
+}
+
+static void harness_reset(uint32_t frame, int wram, const char *why)
+{
+    if (wram) {
+        memset(Memory.RAM, 0, RAM_SIZE);
+        fprintf(stderr, "harness: reset at frame %u (WRAM cleared)%s\n", frame, why);
+    } else {
+        fprintf(stderr, "harness: soft reset at frame %u (WRAM preserved)%s\n", frame, why);
+    }
+    S9xReset();
+    if (prec) fprintf(prec, "%u reset%s\n", frame, wram ? " wram" : "");
+}
+
 int main(int argc, char **argv)
 {
-    if (argc < 5) {
+    live_on = getenv("LIVE") && atoi(getenv("LIVE"));
+#if !HARNESS_SDL
+    if (live_on) {
+        fprintf(stderr, "%s: built without SDL2, so LIVE=1 is not available.\n"
+                "Install libsdl2-dev and rerun tools/host-harness/build.sh.\n", argv[0]);
+        return 2;
+    }
+#endif
+    if (argc < (live_on ? 2 : 5)) {
         fprintf(stderr,
             "usage: %s <rom> <outdir> <tag> <maxframe> [dumpstep] [dumpfrom]\n"
+            "       LIVE=1 %s <rom> [outdir] [tag] [maxframe] [dumpstep] [dumpfrom]\n"
             "env:   TRACE_FROM=<frame>  trace strip chunks + PPU regs\n"
             "       MOUSE=1            attach a scripted SNES Mouse (circling cursor)\n"
             "       MOUSE_CLICK=<f>    hold left button frames [f,f+10)\n"
@@ -407,15 +715,24 @@ int main(int argc, char **argv)
             "       MSU_VOL=<0-255>    MSU-1 volume  (default 255)\n"
             "       MSU_REPEAT=<0|1>   MSU-1 repeat  (default 1)\n"
             "       AUDIO_OUT=<path>   dump the mixed 44.1 kHz s16 stereo stream\n"
-            "       FPS=<10-60>        model a game running below 60 fps\n",
-            argv[0]);
+            "                          (needs MSU, AUDIODBG, LIVE or PAD_REC/PAD_PLAY)\n"
+            "       FPS=<10-60>        model a game running below 60 fps\n"
+            "       LIVE=1             window + audio + keyboard, real time (SDL2 build)\n"
+            "       SCALE=<n>          LIVE window scale (default 3)\n"
+            "       MUTE=1             LIVE without audio output\n"
+            "       PAD_REC=<file>     record pad + resets per frame\n"
+            "       PAD_PLAY=<file>    replay a PAD_REC recording\n",
+            argv[0], argv[0]);
         return 2;
     }
+    /* Live mode defaults: dumps land in the current directory as live_f*.ppm,
+     * the run lasts until the window is closed, and only F12 dumps a frame
+     * unless a dumpstep is given. */
     const char *rompath = argv[1];
-    const char *outdir  = argv[2];
-    const char *tag     = argv[3];
-    uint32_t maxframe   = (uint32_t)strtoul(argv[4], NULL, 0);
-    uint32_t dumpstep   = argc > 5 ? (uint32_t)strtoul(argv[5], NULL, 0) : 1;
+    const char *outdir  = argc > 2 ? argv[2] : ".";
+    const char *tag     = argc > 3 ? argv[3] : "live";
+    uint32_t maxframe   = argc > 4 ? (uint32_t)strtoul(argv[4], NULL, 0) : UINT32_MAX - 1;
+    uint32_t dumpstep   = argc > 5 ? (uint32_t)strtoul(argv[5], NULL, 0) : (live_on ? 0 : 1);
     uint32_t dumpfrom   = argc > 6 ? (uint32_t)strtoul(argv[6], NULL, 0) : 0;
 
     FILE *f = fopen(rompath, "rb");
@@ -471,6 +788,52 @@ int main(int argc, char **argv)
     if (mouse_enabled)
         IPPU.Controller = SNES_MOUSE;
 
+    /* Cart battery SRAM, the same shape as main.cpp's snes_load_sram: the
+     * real battery size is Memory.SRAMMask+1, and a shorter file is read as
+     * far as it goes. Loaded after S9xReset, which does not clear SRAM.
+     *
+     * This is not optional for SPC7110 carts. Hudson's built-in "SPC7110 CHECK
+     * PROGRAM" records its progress in cart SRAM: a blank battery gets stage 1
+     * ("PUSH A BUTTON"), then a reset gets stage 2 ("PUSH B BUTTON"), and only
+     * once both are recorded does the game boot. With SRAM starting at zero
+     * every run the harness can never reach the game.
+     *   SRAM=<file>      load this save before the first frame
+     *   SRAM_OUT=<file>  write SRAM back out when the run ends */
+    {
+        const char *sp = getenv("SRAM");
+        if (sp && Memory.SRAMSize) {
+            size_t sz = (size_t)Memory.SRAMMask + 1;
+            FILE *sf = fopen(sp, "rb");
+            if (sf) {
+                size_t n = fread(Memory.SRAM, 1, sz, sf);
+#if ENABLE_SPC7110
+                /* Same 32-byte RTC trailer main.cpp appends past the battery.
+                 * The cart's own MODE 2 diagnostic has an "RTC BACKUP" test
+                 * that checks the clock survived the power cycle, so without
+                 * this the harness reports NG where the device passes. */
+                if (Settings.SPC7110RTC) {
+                    uint8_t tr[32];
+                    if (fread(tr, 1, sizeof(tr), sf) == sizeof(tr) &&
+                        memcmp(tr, "S7RT", 4) == 0 && tr[4] == 1) {
+                        uint32_t sum = 0;
+                        for (int i = 0; i < 28; i++)
+                            sum = (sum << 1) + (sum >> 31) + tr[i];
+                        if (tr[28] == (uint8_t)sum && tr[29] == (uint8_t)(sum >> 8) &&
+                            tr[30] == (uint8_t)(sum >> 16) && tr[31] == (uint8_t)(sum >> 24)) {
+                            S9xSPC7110RTCImport(tr + 8);
+                            printf("SRAM: RTC-4513 restored from trailer\n");
+                        }
+                    }
+                }
+#endif
+                fclose(sf);
+                printf("SRAM: loaded %zu of %zu bytes from %s\n", n, sz, sp);
+            } else {
+                fprintf(stderr, "SRAM: cannot open %s\n", sp);
+            }
+        }
+    }
+
     if (!S9xInitDisplay()) { fprintf(stderr, "Display init failed\n"); return 1; }
     if (!S9xInitGFX())     { fprintf(stderr, "GFX init failed\n");     return 1; }
 
@@ -514,12 +877,200 @@ int main(int argc, char **argv)
     const char *tr = getenv("TRACE_FROM");
     uint32_t trace_from = tr ? (uint32_t)strtoul(tr, NULL, 0) : UINT32_MAX;
 
+    /* Scripted pad: PAD="600:start,900:a" holds a button for PAD_HOLD frames
+     * (default 8) starting at the given frame. Games that wait on a "press
+     * Start" prompt need this to get past their own front end. PAD_AUTO=n
+     * instead taps Start+A every n frames, which is enough to walk a boot
+     * self-test or a title screen without scripting each press. */
+    uint32_t pad_auto = getenv("PAD_AUTO") ? (uint32_t)atoi(getenv("PAD_AUTO")) : 0;
+    uint32_t pad_hold = getenv("PAD_HOLD") ? (uint32_t)atoi(getenv("PAD_HOLD")) : 8;
+    /* Nothing is pressed before PAD_FROM. This matters more than it looks:
+     * holding a button at power-on is how Hudson's SPC7110 carts enter their
+     * built-in "SPC7110 CHECK PROGRAM" diagnostic, which ends at "POWER OFF
+     * PLEASE" and never reaches the game. Tapping from frame 0 puts every
+     * SPC7110 cart into that screen. Default 240 = ~4 s of untouched boot. */
+    uint32_t pad_from = getenv("PAD_FROM") ? (uint32_t)atoi(getenv("PAD_FROM")) : 240;
+    /* Which buttons to tap. Default Start alone: pressing several at once is
+     * how these carts' diagnostic mode is invoked, so B+Start+A drops you
+     * into "SPC7110 CHECK PROGRAM" instead of past the title screen.
+     * Bit order (bit15..bit4): B Y Sel Sta Up Dn Lf Rt A X L R. */
+    uint32_t pad_mask = getenv("PAD_MASK")
+                      ? (uint32_t)strtoul(getenv("PAD_MASK"), NULL, 0) : 0x1000u;
+
+    /* RESET_AT=<frame> issues a soft reset, the way the user would hit the
+     * console's reset button. Memory.SRAM survives S9xReset, which is the
+     * point: Hudson's SPC7110 carts run their built-in "SPC7110 CHECK
+     * PROGRAM" on a cold boot with uninitialised cart SRAM and finish with
+     * "RESET THE SYSTEM." / "POWER OFF PLEASE". Without a reset (or a
+     * persistent .srm) the harness never reaches the game at all. */
+    uint32_t reset_at[8]; int reset_n = 0;
+    if (getenv("RESET_AT")) {
+        const char *q = getenv("RESET_AT");
+        while (*q && reset_n < 8) {
+            reset_at[reset_n++] = (uint32_t)strtoul(q, (char **)&q, 0);
+            while (*q == ',' || *q == ' ') q++;
+        }
+    }
+
+#if ENABLE_SPC7110
+    /* Virtual clock for the RTC-4513, the way main.cpp feeds it time_us_64().
+     * Without this the cart's clock stands still, so everything it drives --
+     * on Tengai Makyou Zero that is day/night, and the music that changes with
+     * it -- never happens, and the harness silently exercises far less of the
+     * game than the device does. RTC_SPEED multiplies the rate so a full
+     * in-game day fits in a run instead of taking 24 hours. */
+    uint64_t s7_vclock_us = 0;
+    uint32_t rtc_speed = getenv("RTC_SPEED") ? (uint32_t)atoi(getenv("RTC_SPEED")) : 1;
+#endif
+
+    /* PAD_UNTIL: stop the automated presses at this frame. The SPC7110 carts'
+     * check program re-enters MODE 1 if a button is held at reset, so a
+     * multi-stage run must go quiet before each RESET_AT. */
+    uint32_t pad_until = getenv("PAD_UNTIL") ? (uint32_t)strtoul(getenv("PAD_UNTIL"), NULL, 0)
+                                             : 0xffffffffu;
+
+    uint32_t adbg_every = getenv("AUDIODBG") ? (uint32_t)atoi(getenv("AUDIODBG")) : 0;
+    /* FRAME_US=<path>: host microseconds per S9xMainLoop, one "frame us" line
+     * each. Absolute values are the desktop's, but a frame that costs several
+     * times its neighbours here is a frame worth looking at on the device. */
+    FILE *frame_us_log = getenv("FRAME_US") ? fopen(getenv("FRAME_US"), "w") : NULL;
+
+    /* PAD_PLAY replays a PAD_REC recording: until the recording's "end" line
+     * it supplies all input, and keyboard, PAD_AUTO and RESET_AT are ignored;
+     * after it, they take over (so a live replay hands control back to you). */
+    const char *pad_play_path = getenv("PAD_PLAY");
+    const char *pad_rec_path  = getenv("PAD_REC");
+    int pad_playing = 0;
+    if (pad_play_path) {
+        if (!pad_play_load(pad_play_path, argv[0])) return 1;
+        pad_playing = 1;
+        if (pad_auto || reset_n)
+            printf("PAD_PLAY: the recording supplies the input; PAD_AUTO and "
+                   "RESET_AT wait until it ends\n");
+    }
+    if (pad_rec_path && !pad_rec_open(pad_rec_path, argv[0], rompath)) return 1;
+    /* Mix every frame whenever audio is consumed: see mix_frame(). */
+    const int mix_always = live_on || pad_play_path || pad_rec_path;
+#if ENABLE_MSU1
+    const int msu_mixes = msu_on;   /* msu_mix_frame() owns the mixer then */
+#else
+    const int msu_mixes = 0;
+#endif
+
+    /* AUDIO_OUT on an ordinary run: dump the stream mix_frame() produces.
+     * (With MSU-1 active the MSU path owns AUDIO_OUT and the mix instead.) */
+    if ((adbg_every || mix_always) && getenv("AUDIO_OUT") && !msu_mixes) {
+        adbg_audio_out = fopen(getenv("AUDIO_OUT"), "wb");
+        if (!adbg_audio_out) perror(getenv("AUDIO_OUT"));
+    }
+
+#if HARNESS_SDL
+    if (live_on) {
+        /* Frame period for timer pacing (no audio device). With audio the
+         * samples mixed per frame set the pace, which comes to the same. */
+        uint32_t frame_us = Settings.PAL ? 20000 : 16667;
+#if ENABLE_MSU1
+        if (msu_on) frame_us = msu_frame_us;
+#endif
+        const char *sc = getenv("SCALE");
+        const char *mu = getenv("MUTE");
+        char title[96];
+        snprintf(title, sizeof title, "%.*s (%s)", ROM_NAME_LEN, Memory.ROMName,
+                 base_name(argv[0]));
+        if (!hsdl_init(title, sc ? atoi(sc) : 3, !(mu && atoi(mu)), frame_us))
+            return 1;
+    }
+    uint32_t live_pad = 0;
+    int live_reset = 0;
+#endif
+
+#if ENABLE_SDD1 && SDD1_STATS
+    /* Per-frame decompression load: the device does all of it synchronously
+     * inside the $420B write on core0, so the worst frame is the budget. */
+    uint32_t sdd1_frame_max = 0, sdd1_frame_max_at = 0, sdd1_busy_frames = 0;
+    uint32_t sdd1_dframe_max = 0, sdd1_dframe_max_at = 0;
+#endif
+#if ENABLE_SDD1 && SDD1_STATS
+    uint32_t sdd1_tr_from = 0xffffffffu, sdd1_tr_to = 0;
+    if (getenv("SDD1_TRACE")) {
+        const char *t = getenv("SDD1_TRACE"), *c = strchr(t, ',');
+        sdd1_tr_from = (uint32_t)strtoul(t, NULL, 0);
+        sdd1_tr_to   = c ? (uint32_t)strtoul(c + 1, NULL, 0) : sdd1_tr_from;
+    }
+#endif
+    uint32_t auto_pad = 0, play_pad = 0, frames_run = 0;
     for (uint32_t frame = 0; frame <= maxframe; frame++) {
+#if ENABLE_SDD1 && SDD1_STATS
+        uint32_t sdd1_bytes_before = sdd1_stats.bytes;
+        uint32_t sdd1_dbytes_before = sdd1_stats.decomp_bytes;
+        sdd1_trace = (frame >= sdd1_tr_from && frame <= sdd1_tr_to);
+        if (sdd1_trace && sdd1_stats.bytes == sdd1_bytes_before)
+            printf("frame %u\n", frame);
+#endif
+#if ENABLE_SPC7110
+        s7_vclock_us += (uint64_t)16667 * rtc_speed;
+        S9xSPC7110RTCTick(s7_vclock_us);
+#endif
+        while (pad_playing && pplay_i < pplay_n && pplay[pplay_i].frame <= frame) {
+            const pad_event *ev = &pplay[pplay_i++];
+            if (ev->kind == PEV_PAD) {
+                play_pad = ev->mask;
+            } else if (ev->kind == PEV_END) {
+                pad_playing = 0;
+                printf("PAD_PLAY: recording ended at frame %u%s\n", frame,
+                       live_on ? ", the keyboard has control" : "");
+                fflush(stdout);
+            } else {
+                harness_reset(frame, ev->kind == PEV_RESET_WRAM, " (PAD_PLAY)");
+            }
+        }
+        if (!pad_playing) {
+            for (int ri = 0; ri < reset_n; ri++)
+                if (frame == reset_at[ri])
+                    harness_reset(frame, getenv("RESET_WRAM") != NULL, "");
+#if HARNESS_SDL
+            if (live_reset)
+                harness_reset(frame, 0, " (F5)");
+#endif
+        }
+#if HARNESS_SDL
+        live_reset = 0;
+#endif
+        if (pad_auto && frame >= pad_from && frame <= pad_until) {
+            /* SNES bit order (bit15..bit4): B Y Sel Sta Up Dn Lf Rt A X L R */
+            uint32_t phase = (frame - pad_from) % pad_auto;
+            auto_pad = (phase < pad_hold) ? pad_mask : 0;
+        }
+#if HARNESS_SDL
+        harness_pad0 = pad_playing ? play_pad : (auto_pad | live_pad);
+#else
+        harness_pad0 = pad_playing ? play_pad : auto_pad;
+#endif
+        if (prec && harness_pad0 != prec_last) {
+            fprintf(prec, "%u %04x\n", frame, harness_pad0);
+            prec_last = harness_pad0;
+        }
         mouse_frame = frame;
         IPPU.RenderThisFrame = true;
         trace_blocks = (frame >= trace_from);
         if (trace_blocks) fprintf(stderr, "frame %u:\n", frame);
+        struct timespec ft0, ft1;
+        if (frame_us_log) clock_gettime(CLOCK_MONOTONIC, &ft0);
         S9xMainLoop();
+        if (frame_us_log) {
+            clock_gettime(CLOCK_MONOTONIC, &ft1);
+            fprintf(frame_us_log, "%u %ld\n", frame,
+                    (long)((ft1.tv_sec - ft0.tv_sec) * 1000000L + (ft1.tv_nsec - ft0.tv_nsec) / 1000));
+        }
+#if ENABLE_SDD1 && SDD1_STATS
+        {
+            uint32_t b  = sdd1_stats.bytes - sdd1_bytes_before;
+            uint32_t db = sdd1_stats.decomp_bytes - sdd1_dbytes_before;
+            if (b) sdd1_busy_frames++;
+            if (b > sdd1_frame_max) { sdd1_frame_max = b; sdd1_frame_max_at = frame; }
+            if (db > sdd1_dframe_max) { sdd1_dframe_max = db; sdd1_dframe_max_at = frame; }
+        }
+#endif
         if (frame >= trace_from)
             fprintf(stderr,
                 "  regs: BGMode=%d 2133=%02x 2130=%02x 2131=%02x "
@@ -537,9 +1088,46 @@ int main(int argc, char **argv)
             msu_mix_frame();        /* core1's mixer */
         }
 #endif
-        if (frame >= dumpfrom && (frame - dumpfrom) % dumpstep == 0)
+        if (!msu_mixes) {       /* else msu_mix_frame() already drained the mixer */
+            if (adbg_every)
+                adbg_frame(frame, adbg_every);
+            else if (mix_always)
+                mix_frame();
+        }
+        if (dumpstep && frame >= dumpfrom && (frame - dumpfrom) % dumpstep == 0)
             dump_frame(outdir, tag, frame);
+        frames_run = frame + 1;
+#if HARNESS_SDL
+        if (live_on) {
+            int w, h, pitch_px, live_quit = 0;
+            const uint16_t *px = frame_pixels(&w, &h, &pitch_px);
+            hsdl_present(px, w, h, pitch_px);
+            /* Input for the next frame. While paused this keeps polling, so F12
+             * still dumps the frame on screen and N runs exactly one more. */
+            for (;;) {
+                int ev = 0;
+                live_pad = hsdl_poll(&ev);
+                if (ev & HSDL_EV_DUMP) {
+                    dump_frame(outdir, tag, frame);
+                    printf("LIVE: frame %u dumped to %s/%s_f%05u.ppm\n",
+                           frame, outdir, tag, frame);
+                    fflush(stdout);
+                }
+                if (ev & HSDL_EV_RESET) live_reset = 1;
+                if (ev & HSDL_EV_QUIT) { live_quit = 1; break; }
+                hsdl_status(frame);
+                if (!hsdl_paused() || (ev & HSDL_EV_STEP)) break;
+                hsdl_idle();
+            }
+            if (live_quit) break;
+            hsdl_pace();
+        }
+#endif
     }
+#if HARNESS_SDL
+    if (live_on) hsdl_quit();
+#endif
+    pad_rec_close(frames_run);
 #if ENABLE_MSU1
     if (msu_on) {
         msu1_stats_report();
@@ -551,6 +1139,92 @@ int main(int argc, char **argv)
         msu1_deinit();
     }
 #endif
-    printf("done: %u frames\n", maxframe + 1);
+#if ENABLE_SDD1 && SDD1_STATS
+    if (Settings.SDD1) {
+        printf("SDD1: transfers = %u (%u from cache)  bytes requested = %u  "
+               "decompressed = %u (%.1f %% from cache)  largest transfer = %u\n",
+               sdd1_stats.stages, sdd1_stats.hit_stages, sdd1_stats.bytes,
+               sdd1_stats.decomp_bytes,
+               sdd1_stats.bytes ? 100.0 * (sdd1_stats.bytes - sdd1_stats.decomp_bytes)
+                                  / sdd1_stats.bytes : 0.0,
+               sdd1_stats.max_transfer);
+        printf("SDD1: decompressions by bitplane type 0/1/2/3 = %u/%u/%u/%u\n",
+               sdd1_stats.mode_count[0], sdd1_stats.mode_count[1],
+               sdd1_stats.mode_count[2], sdd1_stats.mode_count[3]);
+        printf("SDD1: frames with a transfer = %u of %u  worst frame requested %u bytes "
+               "(frame %u), decompressed %u (frame %u)  avg requested per busy frame = %u\n",
+               sdd1_busy_frames, frames_run, sdd1_frame_max, sdd1_frame_max_at,
+               sdd1_dframe_max, sdd1_dframe_max_at,
+               sdd1_busy_frames ? sdd1_stats.bytes / sdd1_busy_frames : 0);
+        printf("SDD1: bank writes = %u  pages selected = 0x%04x  "
+               "armed-but-ignored DMAs = %u\n",
+               sdd1_stats.bank_writes, sdd1_stats.pages_seen,
+               sdd1_stats.ignored_armed);
+        printf("SDD1: bank register value bits seen: $4804=%02x $4805=%02x $4806=%02x $4807=%02x\n",
+               sdd1_stats.bank_or[0], sdd1_stats.bank_or[1],
+               sdd1_stats.bank_or[2], sdd1_stats.bank_or[3]);
+        printf("SDD1: register reads:");
+        for (int i = 0; i < 8; i++)
+            if (sdd1_stats.reg_reads[i])
+                printf(" %04x:%u", 0x4800 + i, sdd1_stats.reg_reads[i]);
+        printf("\n");
+    }
+#endif
+#if ENABLE_SPC7110 && SPC7110_STATS
+    if (Settings.SPC7110) {
+        printf("SPC7110: mmio r/w = %u/%u  window($d0-$ff) = %u  "
+               "FIFO bytes = %u\n",
+               spc7110_stats.mmio_reads, spc7110_stats.mmio_writes,
+               spc7110_stats.window_reads, spc7110_stats.fifo_reads);
+        printf("SPC7110: decomp_init = %u (mode0 %u, mode1 %u, mode2 %u)  "
+               "max seek index = %u\n",
+               spc7110_stats.decomp_inits, spc7110_stats.mode_inits[0],
+               spc7110_stats.mode_inits[1], spc7110_stats.mode_inits[2],
+               spc7110_stats.max_seek_index);
+        printf("SPC7110: register reads:");
+        for (int i = 0; i < 0x43; i++)
+            if (spc7110_stats.reg_reads[i])
+                printf(" %04x:%u", 0x4800 + i, spc7110_stats.reg_reads[i]);
+        printf("\n");
+        printf("SPC7110: register writes:");
+        for (int i = 0; i < 0x43; i++)
+            if (spc7110_stats.reg_writes[i])
+                printf(" %04x:%u", 0x4800 + i, spc7110_stats.reg_writes[i]);
+        printf("\n");
+    }
+#endif
+    {
+        const char *so = getenv("SRAM_OUT");
+        if (so && Memory.SRAMSize) {
+            size_t sz = (size_t)Memory.SRAMMask + 1;
+            FILE *sf = fopen(so, "wb");
+            if (sf) {
+                fwrite(Memory.SRAM, 1, sz, sf);
+#if ENABLE_SPC7110
+                if (Settings.SPC7110RTC) {
+                    uint8_t tr[32];
+                    memset(tr, 0, sizeof(tr));
+                    memcpy(tr, "S7RT", 4);
+                    tr[4] = 1;
+                    S9xSPC7110RTCExport(tr + 8);
+                    uint32_t sum = 0;
+                    for (int i = 0; i < 28; i++)
+                        sum = (sum << 1) + (sum >> 31) + tr[i];
+                    tr[28] = (uint8_t)sum;         tr[29] = (uint8_t)(sum >> 8);
+                    tr[30] = (uint8_t)(sum >> 16); tr[31] = (uint8_t)(sum >> 24);
+                    fwrite(tr, 1, sizeof(tr), sf);
+                    printf("SRAM: RTC-4513 trailer appended\n");
+                }
+#endif
+                fclose(sf);
+                printf("SRAM: wrote %zu bytes to %s\n", sz, so);
+            } else {
+                fprintf(stderr, "SRAM: cannot write %s\n", so);
+            }
+        }
+    }
+    printf("done: %u frames\n", frames_run);
+    if (frame_us_log) fclose(frame_us_log);
+    if (adbg_audio_out) fclose(adbg_audio_out);
     return 0;
 }

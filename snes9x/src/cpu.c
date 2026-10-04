@@ -9,6 +9,8 @@
 #include "dma.h"
 #include "srtc.h"
 #include "obc1.h"
+#include "spc7110.h"
+#include "sdd1.h"
 #include "fxemu.h"
 #include "sa1.h"
 #include "sa1.h"
@@ -72,6 +74,12 @@ static void CommonS9xReset()
 
    S9xResetCPU();
    S9xResetSRTC();
+#if ENABLE_SPC7110
+   /* s7_power() deliberately leaves the RTC registers alone, so the in-game
+    * Reset menu item does not wipe a clock the player has set. */
+   if (Settings.SPC7110)
+      S9xResetSPC7110();
+#endif
 
    S9xResetDMA();
    S9xResetAPU();
@@ -96,10 +104,22 @@ static void CommonS9xReset()
       S9xInitC4();
 }
 
+/* The S-DD1's registers live in FillRAM, which the PPU reset fills with
+ * open-bus bytes ($48 at $4800-$48ff, which would arm channels 3 and 6), so
+ * its reset has to come after that. It also puts $c0-$ff back on pages 0-3. */
+static void ResetSDD1AfterPPU(void)
+{
+#if ENABLE_SDD1
+   if (Settings.SDD1)
+      S9xResetSDD1();
+#endif
+}
+
 void S9xReset()
 {
    CommonS9xReset();
    S9xResetPPU();
+   ResetSDD1AfterPPU();
    memset(Memory.RAM, 0x55, RAM_SIZE);
 }
 
@@ -107,4 +127,5 @@ void S9xSoftReset()
 {
    CommonS9xReset();
    S9xSoftResetPPU();
+   ResetSDD1AfterPPU();
 }

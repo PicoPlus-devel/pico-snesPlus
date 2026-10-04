@@ -5,6 +5,7 @@
 #include "cpuexec.h"
 #include "sa1.h"
 #include "obc1.h"
+#include "spc7110.h"
 
 extern uint8_t OpenBus;
 
@@ -47,8 +48,16 @@ uint8_t S9xGetByte(uint32_t Address)
       return GetOBC1(Address & 0xFFFF);
    case MAP_BWRAM:
       return Memory.BWRAM[(Address & 0x7fff) - 0x6000];
+#if ENABLE_SPC7110
+   case MAP_SPC7110_ROM:
+      return S9xGetSPC7110Byte(Address);
+   case MAP_SPC7110_DRAM:
+      /* Every address in bank $50 is the decompression FIFO. */
+      return S9xGetSPC7110(0x4800);
+#else
    case MAP_SPC7110_ROM:
    case MAP_SPC7110_DRAM:
+#endif
    case MAP_SETA_DSP:
    case MAP_SETA_RISC:
    default:
@@ -109,8 +118,16 @@ uint16_t S9xGetWord(uint32_t Address)
       return GetOBC1(Address & 0xFFFF) | (GetOBC1((Address + 1) & 0xFFFF) << 8);
    case MAP_BWRAM:
       return *(Memory.BWRAM + ((Address & 0x7fff) - 0x6000)) | (*(Memory.BWRAM + (((Address + 1) & 0x7fff) - 0x6000)) << 8);
+#if ENABLE_SPC7110
+   case MAP_SPC7110_ROM:
+      return S9xGetSPC7110Byte(Address) | (S9xGetSPC7110Byte(Address + 1) << 8);
+   case MAP_SPC7110_DRAM:
+      /* Two pops, not address+1: each read advances the FIFO. */
+      return S9xGetSPC7110(0x4800) | (S9xGetSPC7110(0x4800) << 8);
+#else
    case MAP_SPC7110_ROM:
    case MAP_SPC7110_DRAM:
+#endif
    case MAP_SETA_DSP:
    case MAP_SETA_RISC:
    default:
@@ -308,6 +325,10 @@ uint8_t* GetBasePointer(uint32_t Address)
       return Memory.SRAM - 0x6000;
    case MAP_C4:
       return Memory.C4RAM - 0x6000;
+#if ENABLE_SPC7110
+   case MAP_SPC7110_ROM:
+      return S9xGetBasePointerSPC7110(Address);
+#endif
    default:
       return NULL;
    }
@@ -340,6 +361,10 @@ uint8_t* S9xGetMemPointer(uint32_t Address)
       return GetMemPointerOBC1(Address);
    case MAP_SETA_DSP:
       return Memory.SRAM + ((Address & 0xffff) & Memory.SRAMMask);
+#if ENABLE_SPC7110
+   case MAP_SPC7110_ROM:
+      return S9xGetBasePointerSPC7110(Address) + (Address & 0xffff);
+#endif
    default:
       return NULL;
    }
@@ -374,6 +399,11 @@ void S9xSetPCBase(uint32_t Address)
       case MAP_C4:
          CPU.PCBase = Memory.C4RAM - 0x6000;
          break;
+#if ENABLE_SPC7110
+      case MAP_SPC7110_ROM:
+         CPU.PCBase = S9xGetBasePointerSPC7110(Address);
+         break;
+#endif
       default:
          CPU.PCBase = Memory.SRAM;
          break;

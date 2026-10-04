@@ -2,6 +2,8 @@ fb0_lut
 fb0_nolut
 fb1_nolut
 msu1
+spc7110
+sdd1
 *.raw
 *.ppm
 *.png

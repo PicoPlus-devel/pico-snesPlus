@@ -25,13 +25,13 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes and per-board download links.
 ## Status and limitations
 
 > [!NOTE]
-> Squeezing a SNES into a microcontroller asks a lot of the RP2350, and most of the library plays back nicely: full speed, with sound. It is not a perfect emulator, though — now and then a graphical artifact shows up in a scrolling level or the audio hiccups, and how well a game runs varies from title to title. 
+> Squeezing a SNES into a microcontroller asks a lot of the RP2350. With frame skipping enabled, many games play at or close to full speed, with sound. It is not a perfect emulator, though — now and then a graphical artifact shows up in a scrolling level or the audio hiccups, and how well a game runs varies from title to title. 
 
 Worth knowing before you start. SNES emulation is demanding for this class of hardware, so there are some real limitations:
 
-- **Most cartridge expansion chips are emulated, but not all.** DSP-1 to DSP-4, Super FX, C4, OBC1, SA-1, S-RTC and MSU-1 games run;  S-DD1, and SPC7110 games are refused at load time with a message. Super FX speed varies a lot per game. See [Expansion chips](#expansion-chips) for the full picture.
-- **Games generally run at full speed (60 fps).** Demanding Super FX titles are the main exception; see [Expansion chips](#expansion-chips).
-- **Frame skipping is still enabled by default.** Most games render every other frame; demanding Super FX titles render one frame in three. Turning it off in the settings menu renders every frame, which looks considerably smoother; many games still hold full speed, but some slow down — try it per game, and leave it on for the heaviest titles.
+- **Most cartridge expansion chips are emulated, but not all.** DSP-1 to DSP-4, Super FX, C4, OBC1, SA-1, S-RTC, S-DD1, SPC7110 and MSU-1 games run; SETA and BS-X games do not. Super FX speed varies a lot per game. See [Expansion chips](#expansion-chips) for the full picture.
+- **Many games run at or close to full speed (60 fps) with frame skipping enabled, but not all.** Speed varies per game, and demanding Super FX titles run well below it; see [Expansion chips](#expansion-chips).
+- **Frame skipping is enabled by default.** Most games render every other frame; Super FX and SA-1 games render one frame in three. Turning it off in the settings menu renders every frame and looks smoother; some games will hold full speed, but most slow down.
 - **Battery saves are persisted** In-game saves that a cartridge writes to its battery-backed SRAM are stored on the SD card under `/SAVES/SNES/`. The save is written when you quit the game to the ROM menu (Select + Start → Quit game), so **quit to the menu before powering off** to keep your progress — pulling power mid-game loses everything since the last quit. There is no separate save-state feature. Games that use password systems are unaffected.
 - Development and testing take place primarily on the Adafruit Fruit Jam. The other supported boards need still to be more thoroughly tested.
 
@@ -50,21 +50,28 @@ Many SNES cartridges carry an extra chip that the console itself does not have. 
 | SA-1 | Emulated | Super Mario RPG, Kirby Super Star, Kirby's Dream Land 3 |
 | OBC1 | Emulated | Metal Combat: Falcon's Revenge |
 | S-RTC | Emulated | Dai Kaijuu Monogatari II |
+| S-DD1 | Emulated | Street Fighter Alpha 2, Star Ocean |
+| SPC7110 (+ RTC-4513) | Emulated, **see below** | Far East of Eden Zero, Momotarou Dentetsu Happy, Super Power League 4 |
 
-These are **not** emulated. Such ROMs are detected at load time and refused with a message:
+Two chips, SETA (ST010/ST011) and BS-X, are not emulated. They are also not detected, so those carts load and then run without the chip rather than being refused. Expect them to misbehave.
 
-| Chip | Example games |
-| --- | --- |
-| S-DD1 | Star Ocean, Street Fighter Alpha 2 |
-| SPC7110 | Far East of Eden Zero, Momotarou Dentetsu Happy |
+### S-DD1
 
-Two more chips, SETA (ST010/ST011) and BS-X, are also unimplemented but are not detected, so those carts load and then run without the chip rather than being refused. Expect them to misbehave.
+Street Fighter Alpha 2 runs at full speed with frame skip enabled, and at about 45 to 50 fps without it. The pause while "FIGHT!" is displayed at the start of each round is part of the game.
+
+With the frame rate display enabled, S-DD1 games show two extra values: `D`, the milliseconds per second spent emulating the chip, and `H`, the percentage of graphics taken from a cache of previously unpacked data instead of being unpacked again.
+
+### SPC7110
+
+The English fan translation of Far East of Eden Zero is supported as well.
+
+- **Self-test on first start.** With an empty save, the cartridge runs its own diagnostic (`SPC7110 CHECK PROGRAM`). Press **A**, wait for `ALL OK` and reset the game (Select + Start → Reset game); then repeat with **B**. Do not hold a button down during the reset.
+- **The clock runs only during play.** The board has no battery-backed clock, so the in-game calendar of Far East of Eden Zero falls behind real time while the board is off.
+- **Large ROMs are copied to flash.** The English translation (7 MB) does not fit in PSRAM and is written to flash on first start, which takes a few minutes. This needs a board with 16 MB of flash, such as the Adafruit Fruit Jam or the Pimoroni Pico Plus 2. On a board with less, such as the Adafruit Feather RP2350 (8 MB), the game is refused with "ROM too large". On the Murmulator M2 it depends on the board fitted.
 
 ### MSU-1
 
-MSU-1 is the homebrew expansion chip behind the CD-quality soundtrack patches (Zelda: A Link to the Past, Aladdin, Chrono Trigger and many others). It is emulated: put the patched ROM, its `.msu` data track and its `-<n>.pcm` audio tracks together and the music plays.
-
-**Give each MSU-1 game its own subfolder.** A pack carries dozens of `.pcm` tracks, so dropping one in among your other ROMs makes the folder unusable. Subdirectories are supported by the menu, so a folder per game costs nothing:
+MSU-1 soundtrack patches are supported. Put the patched ROM, its `.msu` file and its `-<n>.pcm` tracks in one folder, sharing the same base name; a subfolder per game is recommended:
 
 ```
 /roms/SNES/Zelda MSU-1/alttp_msu.sfc
@@ -73,15 +80,7 @@ MSU-1 is the homebrew expansion chip behind the CD-quality soundtrack patches (Z
 /roms/SNES/Zelda MSU-1/alttp_msu-2.pcm   ...
 ```
 
-The three parts must share a base name and sit in the same folder as each other; the folder name itself does not matter.
-
-Things worth knowing:
-
-- **The `.pcm` tracks are streamed from the SD card while the game runs** — a playing track needs a steady 176 KB/s, measured at roughly 14% of one CPU core on the Fruit Jam. This is the one part of the emulator that reads the card during gameplay, so a slow or worn card can cost frame rate or make the music stutter. A decent card is the fix. If the card cannot keep up, an `MSU1:` line appears on the serial console reporting the read cost and the underrun count; it stays quiet otherwise. Build with `-DMSU1_VERBOSE=ON` to get that line every second regardless, which is the way to measure what a particular card can do.
-- **Packs with video (the "Deluxe" ones) are much heavier.** Zelda's intro FMV streams its video through the data track as well as the music — around 830 KB/s in total, which is more than half of what the SD card can deliver, and it drops that sequence to about 40 fps. The music itself stays clean; ordinary music-only packs cost only the 176 KB/s above.
-- **Nothing is allocated and no card access happens unless a pack is present.** ROMs without one behave exactly as before.
-- MSU-1 packs are large (often several GB), so plan card space accordingly.
-- MSU-1 can be compiled out entirely with `-DENABLE_MSU1=OFF`.
+The music is streamed from the SD card during play, so a slow card can cause stuttering music or a lower frame rate. Packs with video (the "Deluxe" ones) are heavier; Zelda's intro drops to about 40 fps.
 
 ### A note on Super FX speed
 
@@ -111,6 +110,18 @@ On HW_CONFIG 2 (Pimoroni Pico Plus 2 breadboard or PicoNES PCB) and HW_CONFIG 8 
 > The option exists for experimenting only. If you enable it, you do so entirely at your own risk.
 
 Use this software at your own risk. I am not responsible in any way for damage to your board and/or connected peripherals caused by using this software, by enabling the overclock option, or by incorrect wiring or voltages.
+
+### Video Clock Fix
+
+At 378 MHz and higher the HDMI output clock is derived from the CPU clock, and some TVs and monitors then show small dots or short dotted lines in the picture. Taking the HDMI clock from the clock source of the built-in USB port avoids this, but leaves that port without a usable clock.
+
+- On HW_CONFIG 8 (Adafruit Fruit Jam) and HW_CONFIG 14 (Feather RP2350) this is always done. USB controllers are connected to the second USB port on these boards, so nothing is lost.
+- On HW_CONFIG 2 (Pimoroni Pico Plus 2 breadboard or PicoNES PCB) and HW_CONFIG 13 (Murmulator M2) the built-in USB port is the only USB port, so this is a setting: **Video Clock Fix**, in the settings menu of the ROM browser, below Overclock where that is offered. It is off by default.
+
+> [!IMPORTANT]
+> With Video Clock Fix enabled, the built-in USB port can no longer be used for a gamepad, keyboard or mouse. Use a NES, SNES or Wii Classic controller on the GPIO controller ports instead. The port still powers the board, and USB drive mode remains available.
+
+The setting can only be enabled while a NES, SNES or Wii Classic controller is detected; otherwise an error message is shown. A SNES controller cannot be detected until a button on it has been pressed. Enabling the setting shows a warning first; confirming it restarts the board. To disable it, set it to OFF in the settings menu. If no working controller is available, delete `settings_SNES.dat` from the root of the SD card on a computer: on the next start the board disables the fix and restarts once.
 
 ***
 
@@ -257,7 +268,7 @@ Every supported controller delivers the full SNES button set (B, Y, Select, Star
 
 Two players: a second USB pad is player 2. When a USB pad is connected, the GPIO NES/SNES pad and the Wii Classic pad act as player 2; without one they are player 1.
 
-The settings menu contains a controller test screen that shows which button the emulator receives for each press. For a pad on the GPIO port it also reports which kind of pad it detected (NES or SNES) and names the buttons accordingly, since the two shift out the same bits with different meanings.
+The settings menu contains a controller test screen that shows which button the emulator receives for each press. For a pad on the GPIO port it also reports which kind of pad it detected (NES or SNES) and names the buttons accordingly, since the two shift out the same bits with different meanings. Hold **Select + Up** to leave it.
 
 In the menu itself, a SNES pad on the GPIO port is read by label like a USB or Wii Classic pad: **A** chooses, **B** goes back and **X** opens the [recently played list](#recently-played-games). A NES pad keeps the NES order.
 
@@ -307,6 +318,8 @@ In the menu:
 In game:
 
 - **Select + Start** opens the settings menu. From there you can quit to the ROM menu (which writes the cartridge's battery save to the SD card), reset the game, or change settings: screen mode (8:7 or 1:1, with or without scanlines), frame rate display, audio on/off, frame skip, rapid-fire on A/B, font colors, the controller test screen, and board-specific options such as speaker volume and the NeoPixel VU meter on the Fruit Jam. Settings are remembered across restarts.
+
+The **frame rate display** shows three values in the top-left corner: the number of frames emulated in the last second (60 is full speed), `R`, how often the picture has had to resynchronise with the display since start-up, and `F`, how many frames are skipped after each one drawn. S-DD1 games add two more; see [S-DD1](#s-dd1).
 
 Two entries are offered only when the settings menu is opened from the ROM browser, not from a running game: the [recently played list](#recently-played-games) and [USB drive mode](#usb-drive-mode).
 
@@ -359,9 +372,52 @@ git submodule update --init --recursive
 
 Run `./bld.sh -h` for all options. The resulting `.uf2` file is placed in the `releases/` folder; flash it by holding BOOTSEL while connecting the board and copying the file onto the USB drive that appears.
 
+### Build options
+
+The CMake options below are passed through `EXTRA_CMAKE_ARGS`, for example:
+
+```bash
+EXTRA_CMAKE_ARGS="-DMSU1_VERBOSE=ON -DAUDIO_WATCHDOG=ON" ./bld.sh -c8
+```
+
+Diagnostic output is written to the serial console (UART).
+
+**Features**, on by default:
+
+| Option | Effect |
+| --- | --- |
+| `ENABLE_MSU1` | MSU-1 soundtrack support. |
+| `ENABLE_SPC7110` | SPC7110 support. When off, these games are refused at load time. |
+| `ENABLE_SDD1` | S-DD1 support. When off, these games are refused at load time. |
+| `SDD1_CACHE` | Cache for unpacked S-DD1 graphics. Turn off only to compare; see the `D` and `H` values under [S-DD1](#s-dd1). |
+| `ENABLE_USB_MSC` | [USB drive mode](#usb-drive-mode). |
+
+**Diagnostics**, off by default and intended for testing only:
+
+| Option | Effect |
+| --- | --- |
+| `MSU1_VERBOSE` | Prints the `MSU1:` line (SD read cost, buffer level, underruns) every second while a track plays. Without it the line appears only when the card cannot keep up. Use it to find out whether an SD card is fast enough. |
+| `AUDIO_WATCHDOG` | When the sound has been silent for three seconds, prints the state of the sound processor that explains why. |
+| `PROFILE_BUCKETS` | Adds a per-frame time breakdown to the serial output, and every five seconds switches sound emulation and frame pacing off in turn to measure their cost. Sound drops out while it runs. |
+| `TEAR_STATS` | Prints a `tear:` line every second: frames drawn, frames that reached the screen torn, and how long drawing waited for the display. |
+| `SPC7110_FREEZE_RTC` | Stops the Far East of Eden Zero cartridge clock. |
+| `ROMFLASH_FORCE_REWRITE` | Copies a large ROM to flash on every start, to test the progress bar. Each start then takes about 45 seconds. |
+
+**Comparison switches**, used during development to measure the effect of an optimisation. The defaults are the tested configuration:
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `RENDER_TO_FB` | ON | Renders in small SRAM strips straight into the display buffer. Off uses the older full-frame path. |
+| `BLIT_ON_CORE1` | ON | With `RENDER_TO_FB` off only: copies each frame to the display buffer on the second core. |
+| `MIX_ON_CORE1` | ON | Mixes audio on the second core. |
+| `PACE_VSYNC_PHASE` | ON | With `RENDER_TO_FB` only: starts each drawn frame, together with the skipped frames after it, in step with the display's refresh, which prevents tearing. Takes the place of `PACE_SOFT_60FPS` for NTSC games. |
+| `PACE_SOFT_60FPS` | ON | With `PACE_VSYNC_PHASE` off: paces NTSC frames by a timer instead of the display's vertical sync. |
+| `FILLRAM_IN_PSRAM` | OFF | Forces the SNES register mirror into PSRAM even where it fits in SRAM. |
+| `SUPERFX_IN_SRAM` | OFF | Runs the Super FX interpreter from SRAM. Measured no net gain. |
+
 ### Host-side render test harness
 
-The bundled snes9x core also compiles natively on Linux. [tools/host-harness](tools/host-harness) wraps it in a small test harness that boots a ROM through the same initialization sequence the RP2350 firmware uses and dumps rendered frames as PPM images — rendering bugs can be reproduced and bisected on a desktop machine without flashing a board. Three build variants (strip renderer vs. classic full-frame, device vs. upstream color math) let a byte-compare of the output pinpoint which layer a bug lives in. A fourth variant adds MSU-1 with a stdio backend, so a soundtrack pack can be played and the mixed audio dumped to a file without a board. See [tools/host-harness/README.md](tools/host-harness/README.md) for usage.
+The bundled snes9x core also compiles natively on Linux. [tools/host-harness](tools/host-harness) wraps it in a small test harness that boots a ROM through the same initialization sequence the RP2350 firmware uses and dumps rendered frames as PPM images — rendering bugs can be reproduced and bisected on a desktop machine without flashing a board. Three build variants (strip renderer vs. classic full-frame, device vs. upstream color math) let a byte-compare of the output pinpoint which layer a bug lives in. A fourth variant adds MSU-1 with a stdio backend, so a soundtrack pack can be played and the mixed audio dumped to a file without a board, and a fifth enables the SPC7110. The harness also mixes audio at the real-time rate and can report the DSP and SPC700 state frame by frame, so faults in sound as well as video can be traced on a desktop machine. See [tools/host-harness/README.md](tools/host-harness/README.md) for usage.
 
 ***
 
@@ -374,7 +430,7 @@ The bundled snes9x core also compiles natively on Linux. [tools/host-harness](to
 
 ## Use of AI
 
-The port of the Snes9x core to the RP2350, the coprocessor work (Super FX, DSP, SA-1, C4, OBC1, S-RTC), and the performance and stability tuning were developed with the help of [Anthropic Claude](https://www.anthropic.com/claude) (Opus 4.7, Opus 4.8 and Fable).
+The port of the Snes9x core to the RP2350, the coprocessor work (Super FX, DSP, SA-1, C4, OBC1, S-RTC, S-DD1, SPC7110), and the performance and stability tuning were developed with the help of [Anthropic Claude](https://www.anthropic.com/claude) (Opus 4.7, Opus 4.8, Opus 5, Opus 5.5 and Fable).
 
 ## License
 

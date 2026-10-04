@@ -43,6 +43,28 @@ if(NOT PSRAM_CS_PIN OR PSRAM_CS_PIN EQUAL 0)
     message(FATAL_ERROR "pico-snesPlus requires PSRAM. Selected board has no PSRAM_CS_PIN.")
 endif()
 
+# --- Flash size --------------------------------------------------------------
+# romflash.cpp copies oversized ROMs to the top 8 MB of a 16 MB flash
+# (0x10800000). hardware_flash's flash_range_erase/_program hard-assert
+# `flash_offs + count <= PICO_FLASH_SIZE_BYTES`, and the board headers declare
+# less than the chips the supported boards actually carry: pico2.h says 4 MB
+# for the 16 MB Pimoroni Pico Plus 2 (HW_CONFIG 2), and the tinyusb BSP header
+# older SDKs pull in for the Fruit Jam (family_support.cmake) says 8 MB for a
+# 16 MB part. With either value the first erase hard-faults.
+#
+# So the build always claims the RP2350's full 16 MB CS0 window, on every
+# config, and the runtime decides: romflash.cpp's region_present() reads the
+# real capacity off the chip (JEDEC id) and refuses the copy on a board with
+# less, e.g. the 8 MB Feather RP2350 (HW_CONFIG 14). Besides those asserts the
+# value only sizes the linker's FLASH region; the image is far smaller.
+#
+# Both the board headers' #ifndef guard and the SDK's cmake default only apply
+# when the value is unset, so setting it here wins in both places. Bootloader
+# builds get the same value from FRENS_FLASH_TOTAL (pico_shared/BootPartition.cmake).
+set(PICO_FLASH_SIZE_BYTES 0x1000000)
+add_definitions(-DPICO_FLASH_SIZE_BYTES=0x1000000)
+message(STATUS "PICO_FLASH_SIZE_BYTES forced to 16 MB; romflash checks the real flash size at run time")
+
 add_definitions(-DNDEBUG)
 
 # HDMI data-island audio ring: 208 packets instead of the driver's 256
@@ -54,6 +76,19 @@ add_definitions(-DNDEBUG)
 # once per 60 Hz menu tick and needs that much queue depth. Directory-
 # scoped (add_definitions) so it reaches the pico_shared driver build.
 add_definitions(-DDI_RING_BUFFER_SIZE=208)
+
+# Move cold pico_shared buffers out of SRAM (~4.8 KB in total), which leaves
+# more SRAM heap for the render strips. None of them is touched by the
+# emulation, render, audio or scan-out hot paths. Directory-scoped so the
+# definitions reach the pico_shared sources.
+#   FF_USE_LFN=3          FatFs long-filename work buffers (1,120 B) are
+#                         allocated per f_open/f_readdir from PSRAM instead of
+#                         sitting in .bss; f_read/f_lseek never allocate.
+#   FRENS_FS_IN_PSRAM     FatFs volume object (848 B) in PSRAM.
+#   FRENS_WAV_IN_PSRAM    Menu WAV player state + path (911 B) in PSRAM.
+#   VU_METER_STREAMING    VU meter averages with a running sum instead of a
+#                         1,920 B sample buffer; identical output.
+add_definitions(-DFF_USE_LFN=3 -DFRENS_FS_IN_PSRAM=1 -DFRENS_WAV_IN_PSRAM=1 -DVU_METER_STREAMING=1)
 
 # Opt in to the pico_shared HSTX driver's SCRATCH_X core1 stack (frees the
 # driver's 4 KB static stack buffer back to the SRAM heap). Pairs with
@@ -113,6 +148,91 @@ if(ENABLE_MSU1)
     message(STATUS "ENABLE_MSU1=1 — MSU-1 audio streaming (PSRAM ring, SD-backed)")
 endif()
 
+# SPC7110: Hudson's graphics decompressor and memory mapper, plus an RTC-4513
+# on ROMType $F9. Tengai Makyou Zero, Momotarou Dentetsu Happy, Super Power
+# League 4. The decompressor is byuu and neviksti's reverse-engineered one, by
+# way of the C port in libretro/snes9x2010 — entirely self-contained, so unlike
+# snes9x <= 1.51 there is no "decomp pack" file to put next to the ROM.
+# Costs ~6 KB of .rodata (the reverse-Morton tables the 2bpp/4bpp modes index
+# per output byte), ~0.5 KB of .bss, and a DMA staging buffer that is grown on
+# demand in PSRAM and only while a $4800 / bank-$50 transfer is in flight.
+# Nothing is allocated and no branch is taken unless an SPC7110 cart is loaded.
+# The board has no RTC, so the clock starts unset (the cart then runs its own
+# dead-battery prompt) and is carried in an .SAV trailer — see main.cpp.
+# Directory-scoped so it reaches the snes9x_core build (spc7110.c, memmap.c,
+# getset.c, ppu.c, dma.c, cpu.c).
+# Testing aid: pretend the flash region never already holds the cart, so every
+# launch of an oversized ROM re-runs the erase/write and shows the progress bar.
+# Costs ~45 s per launch -- never ship this on.
+# The progress bar only ever draws between flash operations here (romflash.cpp
+# restores QMI M0 inside each erase/program), so it does not need to be SRAM
+# resident -- and on this board SRAM is what the render strips and GFX
+# LocalState compete for. Saves ~1.7 KB of arena.
+add_definitions(-DPROGRESS_BAR_IN_SRAM=0)
+
+# Diagnostic: stop advancing the SPC7110's RTC-4513, freezing the cart's clock
+# the way tools/host-harness does, so a fault can be A/B'd against the live
+# clock. The in-game date stops advancing while this is on.
+option(SPC7110_FREEZE_RTC "Do not tick the RTC-4513 (diagnostic)" OFF)
+if(SPC7110_FREEZE_RTC)
+    add_definitions(-DSPC7110_FREEZE_RTC=1)
+    message(WARNING "SPC7110_FREEZE_RTC=1 - the cart clock will not advance. Testing only.")
+endif()
+
+# Diagnostic: when the mixed output is silent for 3 seconds running, print the
+# DSP/SPC700 state that says why -- keyed/ENDX/FLG, KON and CPU->APU port
+# write counts, SPC PC, timers, and per-voice envelope and BRR chain length.
+# Costs a peak scan over each mixed block, so it is off unless you are chasing
+# an audio dropout. tools/host-harness has the same trace under AUDIODBG=.
+option(AUDIO_WATCHDOG "Report why audio went silent (diagnostic)" OFF)
+if(AUDIO_WATCHDOG)
+    add_definitions(-DAUDIO_WATCHDOG=1)
+    message(STATUS "AUDIO_WATCHDOG=1 - will report DSP state on a silent spell")
+endif()
+
+option(ROMFLASH_FORCE_REWRITE "Always rewrite a flash-resident ROM (progress-bar testing)" OFF)
+if(ROMFLASH_FORCE_REWRITE)
+    add_definitions(-DROMFLASH_FORCE_REWRITE=1)
+    message(WARNING "ROMFLASH_FORCE_REWRITE=1 - every big-ROM launch rewrites flash (~45 s). Testing only.")
+endif()
+
+option(ENABLE_SPC7110 "SPC7110 decompressor + RTC-4513 (Tengai Makyou Zero)" ON)
+if(ENABLE_SPC7110)
+    add_definitions(-DENABLE_SPC7110=1)
+    message(STATUS "ENABLE_SPC7110=1 — SPC7110 decompressor + RTC-4513")
+endif()
+
+# S-DD1: Nintendo's graphics decompressor and 1 MB ROM bank mapper. Street
+# Fighter Alpha 2 and Star Ocean. Andreas Naive's decompressor, by way of the C
+# port in libretro/snes9x2010 (sdd1.c) -- self-contained, no "decomp pack"
+# file. sdd1.c is not an SRAM hot file, so its code and tables run from flash;
+# its decompressor state and output cache (below) share one PSRAM block that
+# is allocated only when an S-DD1 cart is reset. SRAM cost is the call
+# sites in dma.c and ppu.c plus one pointer. OFF restores the load-time
+# rejection. Directory-scoped so it reaches the snes9x_core build (sdd1.c,
+# dma.c, ppu.c, cpu.c).
+option(ENABLE_SDD1 "S-DD1 decompressor + bank mapper (Street Fighter Alpha 2, Star Ocean)" ON)
+if(ENABLE_SDD1)
+    add_definitions(-DENABLE_SDD1=1)
+    message(STATUS "ENABLE_SDD1=1 — S-DD1 decompressor + bank mapper")
+endif()
+
+# S-DD1 output cache. Decompression costs ~417 Cortex-M33 instructions per
+# byte, and both games keep decompressing the same data (animation frames,
+# text-box graphics). With the cache a repeat is a pointer into a 256 KB PSRAM
+# arena instead of a fresh decompression: 96.7 % of the bytes an SF Alpha 2
+# fight asks for and 99.5 % of Star Ocean's in town come from it (host
+# harness). ~204 KB more PSRAM than the plain 64 KB buffer, no SRAM. OFF only to
+# compare: the on-screen readout (D = ms/s spent on the chip, H = % served
+# from the cache) shows the difference.
+option(SDD1_CACHE "Cache S-DD1 decompressed output in PSRAM" ON)
+if(SDD1_CACHE)
+    add_definitions(-DSDD1_CACHE=1)
+else()
+    add_definitions(-DSDD1_CACHE=0)
+    message(STATUS "SDD1_CACHE=0 — every S-DD1 transfer is decompressed from scratch")
+endif()
+
 # The MSU1: health line is otherwise printed only when the card is
 # struggling (underruns, a slow read, or a draining ring), matching the
 # audio-health readout in run_emulator(). Turn this on to get it every
@@ -147,6 +267,7 @@ endif()
 add_executable(${projectname}
     main.cpp
     msu1_port.cpp
+    romflash.cpp
     splash.cpp
     DefaultSS555.c
 )
@@ -204,6 +325,7 @@ target_compile_definitions(${projectname} PRIVATE
     PICO_AUDIO_I2S_INTERRUPT_IS_BUTTON=${PICO_AUDIO_I2S_INTERRUPT_IS_BUTTON}
     CFG_TUH_RPI_PIO_USB=${ENABLE_PIO_USB}
     PIO_USB_USE_PIO=${PIO_USB_USE_PIO}
+    SNES_OVERCLOCK_FIX=1  # PIO-USB builds: HSTX from PLL_USB, no TMDS jitter at 378 MHz
     PSRAM_CS_PIN=${PSRAM_CS_PIN}
     GPIOHSTXD0=${GPIOHSTXD0}
     GPIOHSTXD1=${GPIOHSTXD1}
@@ -307,6 +429,26 @@ if(PACE_SOFT_60FPS)
     message(STATUS "PACE_SOFT_60FPS enabled — free-running 60 Hz pacer (may tear)")
 endif()
 
+# Strip renderer only: pace NTSC frameskip groups (a rendered frame plus the
+# skipped frames after it) on the display's refresh grid, and steer the
+# group start phase so each rendered frame's strips reach the screen in one
+# refresh. Supersedes PACE_SOFT_60FPS for NTSC; keeps its throughput because
+# only group starts are aligned. Without it the strip tear guard still caps
+# tearing at one seam per refresh. See paceFrame in main.cpp.
+option(PACE_VSYNC_PHASE "Vsync-phase pacing of frameskip groups (strip renderer)" ON)
+if(PACE_VSYNC_PHASE AND RENDER_TO_FB)
+    target_compile_definitions(${projectname} PRIVATE PACE_VSYNC_PHASE=1)
+    message(STATUS "PACE_VSYNC_PHASE enabled — frameskip groups paced on the refresh grid")
+endif()
+
+# Once-per-second UART line with the tear guard's counters (rendered and
+# torn frames, beam waits, start phase). Diagnostic, off in releases.
+option(TEAR_STATS "Print tear guard statistics once per second" OFF)
+if(TEAR_STATS)
+    target_compile_definitions(${projectname} PRIVATE TEAR_STATS=1)
+    message(STATUS "TEAR_STATS enabled — UART tear: line once per second")
+endif()
+
 # Run the GFX.Screen (PSRAM) -> HSTX framebuffer (SRAM) blit on core1's
 # idle background-task hook instead of core0 (~2.5 ms per rendered frame
 # given back to emulation). See core1_blit_task in main.cpp. Only relevant
@@ -407,6 +549,11 @@ target_link_options(${projectname} PRIVATE -Xlinker --print-memory-usage --data-
 #      are reachable through dispatch tables / pointers, that's desired.
 #   2. PRE_LINK objcopy renames those monolithic sections to
 #      .time_critical_<x> / .time_critical_rodata_<x>.
+#   3. Only the exact .text/.rodata names are renamed, so a function tagged
+#      S9X_COLD_INIT (snes9x/src/port.h, section .text.s9x_cold_init) stays
+#      in flash. The ROM-load, init and reset code in these files (~15 KB:
+#      LoadROM, InitROM, ApplyROMFixes, the *ROMMap functions, S9xReset*)
+#      is tagged that way, which returns that SRAM to the heap.
 # Moving .rodata pulls hot lookup tables out of the shared 16 KB XIP cache:
 # the five 65c816 dispatch tables in cpuops.c (5 KB) are read on every
 # emulated instruction; tile.c's odd/even planar tables (512 B) are hit

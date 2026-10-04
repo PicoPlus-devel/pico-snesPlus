@@ -1,6 +1,6 @@
 # CHANGELOG
 
-**v0.6** adds an **overscan fix** for the menus, for TVs that cut off the edges of the screen, and fits more options on one page of the settings menu.
+**v0.7** fixes **tearing in scrolling games** and adds the **SPC7110** (Far East of Eden Zero, Momotarou Dentetsu Happy, Super Power League 4) and **S-DD1** (Street Fighter Alpha 2, Star Ocean) cartridges.
 
 # General Info
 
@@ -15,6 +15,47 @@
 > **The optional 504 MHz overclock in the settings menu is not advised. Leave it off.**
 >
 > It gains very little — the bottleneck is PSRAM bandwidth, not the CPU clock, so most games run at essentially the same speed as at the default 378 MHz. It raises the core voltage, makes the chip run considerably hotter, and can overheat, destabilise or permanently damage the RP2350 and the board it is on. It is off by default and exists for experimenting only. Enabling it is entirely at your own risk; the author accepts no responsibility for any damage.
+
+# v0.7
+
+## Far East of Eden Zero and the other SPC7110 games
+
+A few Japanese cartridges use Hudson's SPC7110 chip. They were refused at load time until now. They play:
+
+- **Far East of Eden Zero** (Tengai Makyou Zero) — the Japanese original and the English fan translation
+- **Momotarou Dentetsu Happy**
+- **Super Power League 4**
+
+Worth knowing:
+
+- **The first start runs a self-test** built into the cartridge (`SPC7110 CHECK PROGRAM`). Press **A**, wait for it to finish and reset the game (Select + Start → Reset game), then do the same with **B**. After that the game starts normally. Do not hold a button down during the reset.
+- **The clock in Far East of Eden Zero only runs while you play.** The board has no clock of its own, so the game asks for the date and time once, and the in-game calendar falls behind while the board is off.
+- **The English translation is copied to flash first.** At 7 MB it does not fit in memory, so after you confirm it is copied into the board's flash. That takes a few minutes, once. This needs a board with 16 MB of flash, such as the Adafruit Fruit Jam or the Pimoroni Pico Plus 2; the Adafruit Feather RP2350 has only 8 MB and cannot run it. On the Murmulator M2 it depends on the board fitted.
+
+See [SPC7110](https://github.com/PicoPlus-devel/pico-snesPlus#spc7110) in the README for more.
+
+## Street Fighter Alpha 2 and Star Ocean
+
+These two games use Nintendo's S-DD1 chip, which unpacks their graphics while the game runs. They were refused at load time until now. They play:
+
+- **Street Fighter Alpha 2**
+- **Star Ocean** (Japan)
+
+## Fixes
+
+- **No more tearing in scrolling games.** Side-scrollers such as Super Mario World and Donkey Kong Country could show jagged, stair-stepped edges and cut-up sprites while the screen scrolled. The picture is now updated in step with the display.
+- **A button used in the menu no longer reaches the game.** Choosing an item in the in-game menu could pass that same button press straight through to the game.
+- **B works straight away on the AliExpress SNES USB controller.** It used to do nothing until Y had been pressed once.
+- **No more dots in the picture on the Adafruit Fruit Jam and Feather RP2350.** Some TVs and monitors showed small dots or short dotted lines.
+- **The Overclock setting always matches the speed the board runs at.** It could show ON while the board ran at the normal speed, or OFF while the board was still overclocked. On the Murmulator M2 and Feather RP2350, saving any setting no longer restarts the board.
+
+## Other changes
+
+- **The controller test screen is left by holding Select + Up** instead of Select + Start, which some 8BitDo wireless controllers keep for themselves.
+- **SA-1 games skip more frames.** With frame skipping on, games such as Super Mario RPG and Kirby Super Star now draw one frame in three, as Super FX games do, instead of every other frame.
+- **The frame rate display shows two more values:** `R`, how often the picture has had to resynchronise with the display since start-up, and `F`, how many frames are skipped after each one drawn.
+- **All settings return to their defaults once** after updating to this version.
+- **New setting: Video Clock Fix** (Pimoroni Pico Plus 2, PicoNES PCB and Murmulator M2). Turn it on if your TV or monitor shows small dots or lines in the picture. A USB controller can then no longer be used; use a NES, SNES or Wii controller instead. See [Video Clock Fix](https://github.com/PicoPlus-devel/pico-snesPlus#video-clock-fix) in the README.
 
 # v0.6
 
@@ -171,7 +212,7 @@ First public release. There will be bugs. Please register an issue when you enco
 **Cartridge ROMs**
 
 - SNES ROMs (`.smc` / `.sfc`) are loaded directly from the SD card through an on-screen menu. Subdirectories are supported.
-- Games generally run at full speed (60 fps).
+- Many games run at or close to full speed (60 fps) with frame skipping enabled; this varies per game.
 
 **Expansion chips**
 
@@ -219,7 +260,7 @@ Star Ocean, Street Fighter Alpha 2 (S-DD1) and Far East of Eden Zero (SPC7110) u
 ## Known limitations
 
 - **Occasional screen artifacts and imperfect sound.** Glitches can show up, especially in scrolling levels, and audio is not always flawless. The emulator pushes the RP2350 to its limits, so performance also varies per game.
-- **Frame skipping is on by default** (every other frame; one frame in three for Super FX games). Turn it off in the settings menu to render every frame for smoother motion; many games still hold full speed, but some slow down, so try it per game.
+- **Frame skipping is on by default** (every other frame; one frame in three for Super FX games). Turning it off in the settings menu renders every frame for smoother motion; some games will hold full speed, but most slow down.
 - Demanding Super FX games such as Star Fox run below full speed.
 - The SETA (ST010 / ST011) and BS-X chips are not implemented and, unlike S-DD1 and SPC7110, are not detected — those games load but misbehave.
 - The SNES hi-res modes 5 and 6 (512 pixels wide, used by very few games — e.g. the Donkey Kong Country "Nintendo presents" intro screen) are rendered at half horizontal resolution, so fine hi-res text can look thin or ragged.

@@ -3,6 +3,8 @@
 #include "snes9x.h"
 #include "memmap.h"
 #include "ppu.h"
+#include "spc7110.h"
+#include "sdd1.h"
 #include "cpuexec.h"
 #include "apu.h"
 #include "dma.h"
@@ -1352,11 +1354,25 @@ void S9xSetCPU(uint8_t byte, uint16_t Address)
       case 0x4801:
       case 0x4802:
       case 0x4803: /* SPC7110 */
+#if ENABLE_SPC7110
+         if (Settings.SPC7110)
+            S9xSetSPC7110(byte, Address);
+#endif
          break;
       case 0x4804:
       case 0x4805:
       case 0x4806:
       case 0x4807: /* These registers are used by both the S-DD1 and the SPC7110 */
+#if ENABLE_SPC7110
+         if (Settings.SPC7110)
+            S9xSetSPC7110(byte, Address);
+#endif
+#if ENABLE_SDD1
+         /* S-DD1 ROM page select for $c0-$ff (sdd1.c). $4800/$4801 need no
+          * hook: FillRAM[Address] = byte below is all the chip reads. */
+         if (Settings.SDD1)
+            S9xSetSDD1(byte, Address);
+#endif
          break;
       case 0x4808:
       case 0x4809:
@@ -1397,6 +1413,10 @@ void S9xSetCPU(uint8_t byte, uint16_t Address)
       case 0x4840:
       case 0x4841:
       case 0x4842: /* SPC7110 */
+#if ENABLE_SPC7110
+         if (Settings.SPC7110)
+            S9xSetSPC7110(byte, Address);
+#endif
          break;
       }
    Memory.FillRAM [Address] = byte;
@@ -1408,6 +1428,7 @@ void S9xSetCPU(uint8_t byte, uint16_t Address)
 /******************************************************************************/
 uint8_t S9xGetCPU(uint16_t Address)
 {
+
    int32_t d;
    uint8_t byte;
 
@@ -1644,11 +1665,29 @@ uint8_t S9xGetCPU(uint16_t Address)
       case 0x437F:
          return (uint8_t) Memory.FillRAM [Address | 0xf];
       default:
+#if ENABLE_SPC7110
+         /* $4800-$4842. No explicit cases on the read side upstream in this
+          * fork, so the whole register file is decoded here. */
+         if (Settings.SPC7110 && Address >= 0x4800)
+            return S9xGetSPC7110(Address);
+#endif
+#if ENABLE_SDD1
+         /* S-DD1 registers read back as written. Star Ocean saves and restores
+          * the $e0/$f0 page selects ($4806/$4807) this way; open bus would
+          * hand it $48 and remap those windows to page 8. */
+         if (Settings.SDD1 && (uint16_t) (Address - 0x4800) < 8)
+         {
+#if SDD1_STATS
+            sdd1_stats.reg_reads[Address - 0x4800]++;
+#endif
+            return Memory.FillRAM[Address];
+         }
+#endif
          return OpenBus;
       }
 }
 
-static void CommonPPUReset()
+S9X_COLD_INIT static void CommonPPUReset()
 {
    uint8_t B;
    int32_t c;
@@ -1788,7 +1827,7 @@ static void CommonPPUReset()
    }
 }
 
-void S9xResetPPU()
+S9X_COLD_INIT void S9xResetPPU()
 {
    int32_t c;
 
@@ -1821,7 +1860,7 @@ void S9xResetPPU()
    Memory.FillRAM[0x4201] = Memory.FillRAM[0x4213] = 0xFF;
 }
 
-void S9xSoftResetPPU()
+S9X_COLD_INIT void S9xSoftResetPPU()
 {
    int32_t c;
 

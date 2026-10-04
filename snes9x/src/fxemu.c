@@ -6,12 +6,54 @@
 #include "memmap.h"
 #include "ppu.h"
 #include "cpuexec.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 
 /* The FxChip Emulator's internal variables */
 FxRegs_s GSU; /* This will be initialized when loading a ROM */
+
+extern FxInit_s SuperFX;
+
+/* Load-time setup, called from SuperFXROMMap (memmap.c). Moved here from
+ * memmap.c, which is SRAM-resident as a whole, so that code run once per cart
+ * load does not occupy SRAM. */
+
+/* SuperFX save/work RAM size, from the ROM header (ported from CATSFC). */
+void DetectSuperFxRamSize(void)
+{
+   if (Memory.ROM[0x7FDA] == 0x33)
+      Memory.SRAMSize = Memory.ROM[0x7FBD];
+   else if (strncmp(Memory.ROMName, "STAR FOX 2", 10) == 0)
+      Memory.SRAMSize = 6;
+   else
+      Memory.SRAMSize = 5;
+}
+
+/* Set up the GSU<->SNES link struct. Pico port: pvRom points straight at the
+ * linear cart ROM (Memory.ROM); the LoROM 32 KB->64 KB fold is done in the
+ * ROM/PRGBANK macros via FX_BANKMASK (see fxinst.h / FxReset in fxemu.c), so
+ * no ~6 MB mirrored ROM buffer is allocated. nRamBanks is clamped to what the
+ * 64 KB Memory.SRAM buffer can hold (1 bank); larger-SRAM GSU-2 titles would
+ * need SRAM_SIZE grown first. */
+void S9xInitSuperFX(void)
+{
+   uint32_t nrambanks;
+
+   SuperFX.pvRegisters = &Memory.FillRAM[0x3000];
+   SuperFX.pvRam        = Memory.SRAM;
+   SuperFX.pvRom        = (uint8_t*) Memory.ROM;
+   SuperFX.nRomBanks    = Memory.CalculatedSize >> 15; /* 32 KB banks */
+
+   nrambanks = SRAM_SIZE >> 16;                        /* 64 KB banks that fit */
+   SuperFX.nRamBanks = nrambanks ? nrambanks : 1;
+
+   printf("SFX init: nRomBanks=%u(32K) nRamBanks=%u rom=%p ram=%p regs=%p\n",
+          (unsigned) SuperFX.nRomBanks, (unsigned) SuperFX.nRamBanks,
+          (void*) SuperFX.pvRom, (void*) SuperFX.pvRam,
+          (void*) SuperFX.pvRegisters);
+}
 
 void FxFlushCache(void)
 {

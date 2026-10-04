@@ -158,7 +158,7 @@ void DrawLargePixel16Add1_2(uint32_t Tile, int32_t Offset, uint32_t StartPixel, 
 void DrawLargePixel16Sub(uint32_t Tile, int32_t Offset, uint32_t StartPixel, uint32_t Pixels, uint32_t StartLine, uint32_t LineCount);
 void DrawLargePixel16Sub1_2(uint32_t Tile, int32_t Offset, uint32_t StartPixel, uint32_t Pixels, uint32_t StartLine, uint32_t LineCount);
 
-bool S9xInitGFX(void)
+S9X_COLD_INIT bool S9xInitGFX(void)
 {
    /* Pico port: LocalState is ~22 KB of scanline/sprite scratch
     * (LineData[240] + LineMatrixData[240] + OBJLines[239]). OBJLines is
@@ -236,7 +236,7 @@ bool S9xInitGFX(void)
    return true;
 }
 
-void S9xDeinitGFX(void)
+S9X_COLD_INIT void S9xDeinitGFX(void)
 {
    /* Free any memory allocated in S9xInitGFX */
 #ifndef NO_ZERO_LUT

@@ -21,6 +21,8 @@ target_sources(snes9x_core INTERFACE
     src/ppu.c
     src/sa1.c
     src/sa1cpu.c
+    src/sdd1.c
+    src/spc7110.c
     src/soundux.c
     src/spc700.c
     src/srtc.c
