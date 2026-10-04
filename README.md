@@ -116,7 +116,7 @@ Use this software at your own risk. I am not responsible in any way for damage t
 At 378 MHz and higher the HDMI output clock is derived from the CPU clock, and some TVs and monitors then show small dots or short dotted lines in the picture. Taking the HDMI clock from the clock source of the built-in USB port avoids this, but leaves that port without a usable clock.
 
 - On HW_CONFIG 8 (Adafruit Fruit Jam) and HW_CONFIG 14 (Feather RP2350) this is always done. USB controllers are connected to the second USB port on these boards, so nothing is lost.
-- On HW_CONFIG 2 (Pimoroni Pico Plus 2 breadboard or PicoNES PCB) and HW_CONFIG 13 (Murmulator M2) the built-in USB port is the only USB port, so this is a setting: **Video Clock Fix**, in the settings menu of the ROM browser, below Overclock. It is off by default.
+- On HW_CONFIG 2 (Pimoroni Pico Plus 2 breadboard or PicoNES PCB) and HW_CONFIG 13 (Murmulator M2) the built-in USB port is the only USB port, so this is a setting: **Video Clock Fix**, in the settings menu of the ROM browser, below Overclock where that is offered. It is off by default.
 
 > [!IMPORTANT]
 > With Video Clock Fix enabled, the built-in USB port can no longer be used for a gamepad, keyboard or mouse. Use a NES, SNES or Wii Classic controller on the GPIO controller ports instead. The port still powers the board, and USB drive mode remains available.
