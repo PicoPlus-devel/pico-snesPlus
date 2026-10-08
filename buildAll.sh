@@ -12,7 +12,7 @@ if ! command -v picotool >/dev/null 2>&1; then
     exit 1
 fi
 
-HWCONFIGS="2 8 13 14"
+HWCONFIGS="2 8 13 14 15"
 for HWCONFIG in $HWCONFIGS; do
     ./bld.sh -c "$HWCONFIG" -2
 done
