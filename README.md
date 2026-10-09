@@ -9,14 +9,15 @@ It is a sister project of these emulators, with which it shares its menu, displa
 - Game Boy / Game Boy Color: [pico-peanutGB](https://github.com/PicoPlus-devel/pico-peanutGB)
 - Sega Mega Drive / Genesis: [pico-genesisPlus](https://github.com/PicoPlus-devel/pico-genesisPlus)
 
-It runs on four hardware configurations, each with its own ready-made binary — see [Supported hardware](#supported-hardware) for the download links:
+It runs on five hardware configurations, each with its own ready-made binary — see [Supported hardware](#supported-hardware) for the download links:
 
 - [Adafruit Fruit Jam](https://www.adafruit.com/product/6200) — the primary development and test board
 - [Pimoroni Pico Plus 2](https://shop.pimoroni.com/products/pimoroni-pico-plus-2?variant=42092668289107) with an [Adafruit DVI breakout](https://www.adafruit.com/product/4984) and a microSD breakout, on a breadboard or on the [PicoNES PCB](#picones-pcb)
 - [Murmulator M2](https://murmulator.ru)
 - [Adafruit Feather RP2350 with HSTX Port](https://www.adafruit.com/product/6130) with a TLV320DAC3100 I2S DAC and a microSD breakout
+- [Olimex RP2040-PICO-PC](https://www.olimex.com/Products/MicroPython/PICO/RP2040-PICO-PC/) with a Raspberry Pi Pico 2 compatible board that has 8 MB of PSRAM
 
-All four are RP2350 boards with 8 MB of PSRAM, which this emulator requires: a plain Raspberry Pi Pico 2 has none and cannot be used, and configurations without PSRAM known from the sister projects will not build.
+All five are RP2350 boards with 8 MB of PSRAM, which this emulator requires: a plain Raspberry Pi Pico 2 has none and cannot be used, and configurations without PSRAM known from the sister projects will not build.
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes and per-board download links.
 
@@ -98,7 +99,7 @@ The bottleneck is PSRAM bandwidth, not the CPU clock, so the optional overclock 
 
 By default the RP2350 is overclocked to 378 MHz for this emulator. This clock gives stable performance across the tested games, and is the setting the emulator is developed and tested with.
 
-On HW_CONFIG 2 (Pimoroni Pico Plus 2 breadboard or PicoNES PCB) and HW_CONFIG 8 (Adafruit Fruit Jam), the settings menu has an optional overclock that raises the clock to 504 MHz; it is not offered on the Murmulator M2 (13) or the Feather RP2350 (14).
+On HW_CONFIG 2 (Pimoroni Pico Plus 2 breadboard or PicoNES PCB) and HW_CONFIG 8 (Adafruit Fruit Jam), the settings menu has an optional overclock that raises the clock to 504 MHz; it is not offered on the Murmulator M2 (13), the Feather RP2350 (14) or the Olimex RP2040-PICO-PC (15).
 
 > [!WARNING]
 > **The 504 MHz option is not advised. Leave it off.**
@@ -116,10 +117,10 @@ Use this software at your own risk. I am not responsible in any way for damage t
 At 378 MHz and higher the HDMI output clock is derived from the CPU clock, and some TVs and monitors then show small dots or short dotted lines in the picture. Taking the HDMI clock from the clock source of the built-in USB port avoids this, but leaves that port without a usable clock.
 
 - On HW_CONFIG 8 (Adafruit Fruit Jam) and HW_CONFIG 14 (Feather RP2350) this is always done. USB controllers are connected to the second USB port on these boards, so nothing is lost.
-- On HW_CONFIG 2 (Pimoroni Pico Plus 2 breadboard or PicoNES PCB) and HW_CONFIG 13 (Murmulator M2) the built-in USB port is the only USB port, so this is a setting: **Video Clock Fix**, in the settings menu of the ROM browser, below Overclock where that is offered. It is off by default.
+- On HW_CONFIG 2 (Pimoroni Pico Plus 2 breadboard or PicoNES PCB), HW_CONFIG 13 (Murmulator M2) and HW_CONFIG 15 (Olimex RP2040-PICO-PC, where it is the USB-A port) the built-in USB port is the only USB port, so this is a setting: **Video Clock Fix**, in the settings menu of the ROM browser, below Overclock where that is offered. It is off by default.
 
 > [!IMPORTANT]
-> With Video Clock Fix enabled, the built-in USB port can no longer be used for a gamepad, keyboard or mouse. Use a NES, SNES or Wii Classic controller on the GPIO controller ports instead. The port still powers the board, and USB drive mode remains available.
+> With Video Clock Fix enabled, the built-in USB port can no longer be used for a gamepad, keyboard or mouse. Use a NES, SNES or Wii Classic controller on the GPIO controller ports instead; on the Olimex RP2040-PICO-PC, a NES or SNES controller on the UEXT connector. The port still powers the board, and USB drive mode remains available.
 
 The setting can only be enabled while a NES, SNES or Wii Classic controller is detected; otherwise an error message is shown. A SNES controller cannot be detected until a button on it has been pressed. Enabling the setting shows a warning first; confirming it restarts the board. To disable it, set it to OFF in the settings menu. If no working controller is available, delete `settings_SNES.dat` from the root of the SD card on a computer: on the next start the board disables the fix and restarts once.
 
@@ -127,7 +128,7 @@ The setting can only be enabled while a NES, SNES or Wii Classic controller is d
 
 ## Supported hardware
 
-An RP2350 board with 8 MB of PSRAM is required. Only the four hardware configurations below are supported; other configurations known from the sister projects will not build, because the build refuses configurations without RP2350 and PSRAM.
+An RP2350 board with 8 MB of PSRAM is required. Only the five hardware configurations below are supported; other configurations known from the sister projects will not build, because the build refuses configurations without RP2350 and PSRAM.
 
 | HW_CONFIG | Hardware | Binary |
 | --- | --- | --- |
@@ -135,12 +136,14 @@ An RP2350 board with 8 MB of PSRAM is required. Only the four hardware configura
 | 8 | [Adafruit Fruit Jam](https://www.adafruit.com/product/6200) (primary development and test board) | [picosnesPlus_AdafruitFruitJam_arm_piousb.uf2](https://github.com/PicoPlus-devel/pico-snesPlus/releases/latest/download/picosnesPlus_AdafruitFruitJam_arm_piousb.uf2) |
 | 13 | [Murmulator M2](https://murmulator.ru) | [picosnesPlus_MurmulatorM2_arm.uf2](https://github.com/PicoPlus-devel/pico-snesPlus/releases/latest/download/picosnesPlus_MurmulatorM2_arm.uf2) |
 | 14 | [Adafruit Feather RP2350 with HSTX Port](https://www.adafruit.com/product/6130) with TLV320DAC3100 I2S DAC and microSD breakout | [picosnesPlus_AdafruitFeatherRP2350_TLV320DAC3100_arm_piousb.uf2](https://github.com/PicoPlus-devel/pico-snesPlus/releases/latest/download/picosnesPlus_AdafruitFeatherRP2350_TLV320DAC3100_arm_piousb.uf2) |
+| 15 | [Olimex RP2040-PICO-PC](https://www.olimex.com/Products/MicroPython/PICO/RP2040-PICO-PC/) with a Raspberry Pi Pico 2 compatible board that has 8 MB of PSRAM | [picosnesPlus_OlimexPicoPC_arm.uf2](https://github.com/PicoPlus-devel/pico-snesPlus/releases/latest/download/picosnesPlus_OlimexPicoPC_arm.uf2) |
 
 Notes per configuration:
 
 - **HW_CONFIG 2**: a plain Raspberry Pi Pico 2 does not work — it has no PSRAM. The Pimoroni Pico Plus 2 (with onboard PSRAM) is required. The [PicoNES PCB](#picones-pcb) is the tidy version of this configuration; it needs design v2.6 or later, which is the first that can host a Pimoroni Pico Plus 2. The two builds take different microSD breakouts: on a breadboard the [Adafruit Micro-SD breakout board+](https://www.adafruit.com/product/254), on the PCB the smaller [Adafruit Micro SD SPI or SDIO breakout](https://www.adafruit.com/product/4682), which is the footprint the board is laid out for.
 - **HW_CONFIG 8**: no additional hardware is required apart from a game controller. Audio is output through the monitor and the built-in speaker or headphone jack.
 - **HW_CONFIG 14**: the Feather RP2350 is sold in two variants: [with 8 MB PSRAM onboard](https://www.adafruit.com/product/6130) and [without PSRAM](https://www.adafruit.com/product/6000). On the variant without PSRAM, a PSRAM chip must be soldered onto the board separately.
+- **HW_CONFIG 15**: a standard Raspberry Pi Pico 2 does not work — it has no PSRAM. The board fitted must have 8 MB of PSRAM with its chip select on GPIO 8. Audio is output through HDMI and the board's audio jack at the same time. A NES or SNES controller can be connected to the UEXT connector: clock on GPIO 5, latch on GPIO 9 and data on GPIO 20. There is no Wii Classic controller support and no Pico 2 W binary. Support for this board was contributed by [DnCraptor](https://github.com/DnCraptor).
 
 For wiring and assembly instructions, see the setup sections of the [pico-infonesPlus README](https://github.com/PicoPlus-devel/pico-infonesPlus#setup); for the PCB version of HW_CONFIG 2, see [PicoNES PCB](#picones-pcb) below. Flashing works the same for every board: hold BOOTSEL while connecting the board over USB, then copy the `.uf2` file onto the USB drive that appears.
 
@@ -368,6 +371,7 @@ git submodule update --init --recursive
 ./bld.sh -c8       # HW_CONFIG 8:  Adafruit Fruit Jam
 ./bld.sh -c13      # HW_CONFIG 13: Murmulator M2
 ./bld.sh -c14      # HW_CONFIG 14: Adafruit Feather RP2350
+./bld.sh -c15      # HW_CONFIG 15: Olimex RP2040-PICO-PC
 ```
 
 Run `./bld.sh -h` for all options. The resulting `.uf2` file is placed in the `releases/` folder; flash it by holding BOOTSEL while connecting the board and copying the file onto the USB drive that appears.
@@ -427,6 +431,7 @@ The bundled snes9x core also compiles natively on Linux. [tools/host-harness](to
 - The menu, HDMI driver, PSRAM allocator, and controller code in [pico_shared](https://github.com/PicoPlus-devel/pico_shared) are shared with the sister projects listed at the top of this README.
 - Metadata, M2 testing and the 3D-printed case for the PicoNES PCB by [DynaMight1124](https://github.com/DynaMight1124)
 - The [PicoNES PCB](#picones-pcb) was designed by **John Edgar Park** ([@johnedgarpark](https://twitter.com/johnedgarpark)).
+- Olimex RP2040-PICO-PC support, including sound through its audio jack, by [DnCraptor](https://github.com/DnCraptor).
 
 ## Use of AI
 

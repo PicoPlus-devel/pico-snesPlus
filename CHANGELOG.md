@@ -1,6 +1,6 @@
 # CHANGELOG
 
-**v0.7** fixes **tearing in scrolling games** and adds the **SPC7110** (Far East of Eden Zero, Momotarou Dentetsu Happy, Super Power League 4) and **S-DD1** (Street Fighter Alpha 2, Star Ocean) cartridges.
+**v0.8** adds the **Olimex RP2040-PICO-PC** with a Raspberry Pi Pico 2 compatible board that has 8 MB of PSRAM to the supported boards.
 
 # General Info
 
@@ -16,7 +16,15 @@
 >
 > It gains very little — the bottleneck is PSRAM bandwidth, not the CPU clock, so most games run at essentially the same speed as at the default 378 MHz. It raises the core voltage, makes the chip run considerably hotter, and can overheat, destabilise or permanently damage the RP2350 and the board it is on. It is off by default and exists for experimenting only. Enabling it is entirely at your own risk; the author accepts no responsibility for any damage.
 
+# v0.8
+
+## What's new
+
+- **Olimex RP2040-PICO-PC.** The emulator now runs on the [Olimex RP2040-PICO-PC](https://www.olimex.com/Products/MicroPython/PICO/RP2040-PICO-PC/) with a Raspberry Pi Pico 2 compatible board that has 8 MB of PSRAM: HDMI, sound through HDMI and the audio jack, a USB controller on the USB-A port and a NES or SNES controller on the UEXT connector. A standard Raspberry Pi Pico 2 has no PSRAM and does not work. See [Supported hardware](https://github.com/PicoPlus-devel/pico-snesPlus#supported-hardware). Contributed by [DnCraptor](https://github.com/DnCraptor).
+
 # v0.7
+
+**v0.7** fixes **tearing in scrolling games** and adds the **SPC7110** (Far East of Eden Zero, Momotarou Dentetsu Happy, Super Power League 4) and **S-DD1** (Street Fighter Alpha 2, Star Ocean) cartridges.
 
 ## Far East of Eden Zero and the other SPC7110 games
 
@@ -273,7 +281,7 @@ The port of the Snes9x core to the RP2350, the coprocessor work (Super FX, DSP, 
 <a name="downloads___"></a>
 ## Downloads by configuration
 
-Only the four RP2350 + PSRAM configurations below are supported. For board-by-board wiring and which UF2 file to flash, see the [Supported hardware section in the README](https://github.com/PicoPlus-devel/pico-snesPlus#supported-hardware).
+Only the five RP2350 + PSRAM configurations below are supported. For board-by-board wiring and which UF2 file to flash, see the [Supported hardware section in the README](https://github.com/PicoPlus-devel/pico-snesPlus#supported-hardware).
 
 | HW_CONFIG | Board | Binary |
 |:--|:--|:--|
@@ -281,6 +289,7 @@ Only the four RP2350 + PSRAM configurations below are supported. For board-by-bo
 | 8 | Adafruit Fruit Jam | [picosnesPlus_AdafruitFruitJam_arm_piousb.uf2](https://github.com/PicoPlus-devel/pico-snesPlus/releases/latest/download/picosnesPlus_AdafruitFruitJam_arm_piousb.uf2) |
 | 13 | Murmulator M2 | [picosnesPlus_MurmulatorM2_arm.uf2](https://github.com/PicoPlus-devel/pico-snesPlus/releases/latest/download/picosnesPlus_MurmulatorM2_arm.uf2)  |
 | 14 | Adafruit Feather RP2350 with TLV320DAC3100 | [picosnesPlus_AdafruitFeatherRP2350_TLV320DAC3100_arm_piousb.uf2](https://github.com/PicoPlus-devel/pico-snesPlus/releases/latest/download/picosnesPlus_AdafruitFeatherRP2350_TLV320DAC3100_arm_piousb.uf2) |
+| 15 | Olimex RP2040-PICO-PC with a Pico 2 compatible board that has 8 MB of PSRAM | [picosnesPlus_OlimexPicoPC_arm.uf2](https://github.com/PicoPlus-devel/pico-snesPlus/releases/latest/download/picosnesPlus_OlimexPicoPC_arm.uf2) |
 
 ## Other downloads
 
