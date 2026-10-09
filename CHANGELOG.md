@@ -22,6 +22,10 @@
 
 - **Olimex RP2040-PICO-PC.** The emulator now runs on the [Olimex RP2040-PICO-PC](https://www.olimex.com/Products/MicroPython/PICO/RP2040-PICO-PC/) with a Raspberry Pi Pico 2 compatible board that has 8 MB of PSRAM: HDMI, sound through HDMI and the audio jack, a USB controller on the USB-A port and a NES or SNES controller on the UEXT connector. A standard Raspberry Pi Pico 2 has no PSRAM and does not work. See [Supported hardware](https://github.com/PicoPlus-devel/pico-snesPlus#supported-hardware). Contributed by [DnCraptor](https://github.com/DnCraptor).
 
+## Fixes
+
+- **Back into the game after the flash write.** When started from [pico-bootLoader](https://github.com/PicoPlus-devel/pico-bootLoader), a game too large for PSRAM, such as the English translation of Far East of Eden Zero, no longer returns to the bootloader menu after it has been copied to flash. The console restarts straight into the game, as it does without the bootloader.
+
 # v0.7
 
 **v0.7** fixes **tearing in scrolling games** and adds the **SPC7110** (Far East of Eden Zero, Momotarou Dentetsu Happy, Super Power League 4) and **S-DD1** (Street Fighter Alpha 2, Star Ocean) cartridges.

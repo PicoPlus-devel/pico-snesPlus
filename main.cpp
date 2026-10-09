@@ -1808,8 +1808,13 @@ int main()
      * does not come back. Rather than try to nurse the USB stack through it,
      * reboot once the write is done -- USB, core1 and the QMI all come back
      * clean -- and pick the cart straight back up here so the user still only
-     * chose it once. scratch[5] is free: [4] is clobbered by watchdog_reboot,
-     * [6]/[7] are the bootloader handshake (FrensHelpers.cpp). */
+     * chose it once. scratch[5] is free: [4] holds the SDK's watchdog_enable
+     * magic, [6]/[7] are the bootloader handshake (FrensHelpers.cpp). The
+     * reboot is a watchdog_enable(), not a watchdog_reboot(): pico-bootLoader
+     * jumps straight back into the resident application only after a
+     * watchdog_enable reboot, and shows its menu after any other. The other
+     * effect of that magic, initAll() flashing the rom named in ROMINFOFILE,
+     * needs a board without PSRAM, which this emulator does not run on. */
     bool showSplash = !watchdog_caused_reboot();
     bool resumedFromFlashWrite = false;
     if (watchdog_hw->scratch[SNES_RESUME_SCRATCH] == SNES_RESUME_MAGIC) {
@@ -1967,7 +1972,7 @@ int main()
                  * the record then names it and it starts straight from XIP. */
                 printf("romflash: rebooting to restore USB, then resuming\n");
                 watchdog_hw->scratch[SNES_RESUME_SCRATCH] = SNES_RESUME_MAGIC;
-                watchdog_reboot(0, 0, 0);
+                watchdog_enable(1, 1);
                 while (true) tight_loop_contents();
             }
 
