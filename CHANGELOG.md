@@ -1,6 +1,6 @@
 # CHANGELOG
 
-**v0.8.1** adds a PicoNES PCB design with SNES controller ports. The emulator is unchanged from v0.8.
+**v0.9** adds support for the original SNES Mouse.
 
 # General Info
 
@@ -15,6 +15,14 @@
 > **The optional 504 MHz overclock in the settings menu is not advised. Leave it off.**
 >
 > It gains very little — the bottleneck is PSRAM bandwidth, not the CPU clock, so most games run at essentially the same speed as at the default 378 MHz. It raises the core voltage, makes the chip run considerably hotter, and can overheat, destabilise or permanently damage the RP2350 and the board it is on. It is off by default and exists for experimenting only. Enabling it is entirely at your own risk; the author accepts no responsibility for any damage.
+
+# v0.9
+
+## What's new
+
+- **Original SNES Mouse.** An original Nintendo SNES Mouse can now be used in controller port 1 of the PicoNES v2.8 PCB, for Mario Paint and other mouse games. It is detected automatically, and it can be used together with a USB mouse. See [SNES Mouse](https://github.com/PicoPlus-devel/pico-snesPlus#snes-mouse) in the README.
+- **Mouse test ROM.** `mousetest.sfc` in [tools/mousetest](https://github.com/PicoPlus-devel/pico-snesPlus/tree/main/tools/mousetest) shows the cursor position, the movement and the buttons of a connected mouse.
+- The controller test screen in the settings menu recognises the SNES Mouse.
 
 # v0.8.1
 
@@ -270,7 +278,7 @@ Star Ocean, Street Fighter Alpha 2 (S-DD1) and Far East of Eden Zero (SPC7110) u
 - USB controllers, including Xbox / XInput (and 8BitDo in X-mode), Sony DualShock 4 / DualSense, the AliExpress SNES USB pad, PlayStation Classic, and USB keyboards.
 - Directly wired NES / SNES gamepads, and the Wii Classic / SNES-Classic-mini pad over I²C.
 - Two-player play with a second USB controller.
-- **SNES Mouse**: plug in any USB mouse and it becomes a SNES Mouse in controller port 1 — Mario Paint is fully playable, no configuration needed. While the mouse is connected it takes the place of player 1's pad, just like the real peripheral; unplug it and the pad is player 1 again. See the [README](https://github.com/PicoPlus-devel/pico-snesPlus#snes-mouse-usb-mouse) for details.
+- **SNES Mouse**: plug in any USB mouse and it becomes a SNES Mouse in controller port 1 — Mario Paint is fully playable, no configuration needed. While the mouse is connected it takes the place of player 1's pad, just like the real peripheral; unplug it and the pad is player 1 again. See the [README](https://github.com/PicoPlus-devel/pico-snesPlus#snes-mouse) for details.
 - A controller test screen in the settings menu shows which button the emulator receives for each press.
 
 **Overclocking**

@@ -458,6 +458,13 @@ extern "C" { volatile bool g_pad_ignore_request = false; }
 
 extern "C" uint32_t S9xReadJoypad(int32_t port)
 {
+#if NES_PIN_CLK != -1
+    /* Finish the GPIO pad read host_tick() started at frame start (see there).
+     * S9xUpdateJoypads asks for port 0 first, and the S9xReadMousePosition
+     * calls that follow it then see this frame's SNES Mouse motion too. */
+    if (port == 0)
+        nespad_read_finish();
+#endif
     if (port < 0 || port > 1) return 0;
 
     static bool ignore[2] = { false, false };
@@ -509,9 +516,11 @@ extern "C" uint32_t S9xReadJoypad(int32_t port)
 }
 
 /* SNES Mouse (Mario Paint) — fed from the USB HID mouse state pico_shared
- * accumulates (hid_app.cpp). The real peripheral is a pure delta device, so
- * no absolute cursor is kept here: the core only diffs what we return
- * against its own IPPU.PrevMouseX/Y (which it then sets to our value), so
+ * accumulates (hid_app.cpp) and from an original SNES Mouse in GPIO
+ * controller port 1 (nespad.cpp); with both plugged in their motion adds
+ * up and either one's buttons count. The real peripheral is a pure delta
+ * device, so no absolute cursor is kept here: the core only diffs what we
+ * return against its own IPPU.PrevMouseX/Y (which it then sets to our value), so
  * returning PrevMouse plus the pending motion hands it exact deltas and
  * stays in sync with the game's cursor by construction — across the game's
  * own edge clamping, its speed scaling, and S9xReset re-centering. (A
@@ -520,6 +529,9 @@ extern "C" uint32_t S9xReadJoypad(int32_t port)
  * The divisor tames modern 800-1600 dpi mice; the queue keeps sub-divisor
  * remainders so slow movements aren't truncated away, and saturates at one
  * max-rate frame (+-63 SNES counts) like the real mouse's motion counter.
+ * The original mouse already counts in SNES counts (nespad keeps it at its
+ * lowest, linear sensitivity), so its motion enters the queue multiplied by
+ * the divisor and passes 1:1.
  * Runs once per frame from S9xMainLoop on core0 — same core as tuh_task(),
  * so no locking needed. */
 #define SNES_MOUSE_SENS_DIV 2
@@ -529,13 +541,27 @@ extern "C" bool S9xReadMousePosition(int32_t which1, int32_t *x, int32_t *y, uin
     if (which1 != 0)
         return false;
     io::MouseState &m = io::getCurrentMouseState();
-    if (!m.connected)
+    bool gpio = false;
+#if NES_PIN_CLK != -1 && NESPAD_SNES_MOUSE
+    gpio = nespad_padtype[0] == NESPAD_TYPE_MOUSE;
+#endif
+    if (!m.connected && !gpio)
         return false;
 
     static int32_t qx, qy; /* pending motion, raw HID counts */
     qx += m.dx;
     qy += m.dy;
     m.dx = m.dy = m.wheel = 0;
+    uint32_t gpio_buttons = 0;
+#if NES_PIN_CLK != -1 && NESPAD_SNES_MOUSE
+    if (gpio)
+    {
+        qx += nespad_mouse[0].dx * SNES_MOUSE_SENS_DIV;
+        qy += nespad_mouse[0].dy * SNES_MOUSE_SENS_DIV;
+        nespad_mouse[0].dx = nespad_mouse[0].dy = 0;
+        gpio_buttons = nespad_mouse[0].buttons; /* bit0=left, bit1=right, like TinyUSB */
+    }
+#endif
 
     const int32_t qcap = 63 * SNES_MOUSE_SENS_DIV;
     if (qx > qcap) qx = qcap; else if (qx < -qcap) qx = -qcap;
@@ -548,7 +574,7 @@ extern "C" bool S9xReadMousePosition(int32_t which1, int32_t *x, int32_t *y, uin
 
     *x = IPPU.PrevMouseX[0] + step_x;
     *y = IPPU.PrevMouseY[0] + step_y;
-    *buttons = m.buttons & 3; /* TinyUSB bit0=left, bit1=right — same layout the core packs */
+    *buttons = (m.buttons | gpio_buttons) & 3; /* TinyUSB bit0=left, bit1=right — same layout the core packs */
     return true;
 }
 

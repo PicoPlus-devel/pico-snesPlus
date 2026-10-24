@@ -148,6 +148,16 @@ if(ENABLE_MSU1)
     message(STATUS "ENABLE_MSU1=1 — MSU-1 audio streaming (PSRAM ring, SD-backed)")
 endif()
 
+# Original SNES Mouse in GPIO controller port 1 (PicoNES v2.8 PCB), next to the
+# USB mouse. The pico_shared nespad reader then clocks 32 bits per read instead
+# of 18, which its deferred finish in port_glue.cpp keeps off the frame time.
+# Directory-scoped so it reaches the pico_shared sources and the snes9x_core build.
+option(ENABLE_SNES_MOUSE_GPIO "SNES Mouse on GPIO controller port 1" ON)
+if(ENABLE_SNES_MOUSE_GPIO)
+    add_definitions(-DNESPAD_SNES_MOUSE=1)
+    message(STATUS "NESPAD_SNES_MOUSE=1 — SNES Mouse on GPIO controller port 1")
+endif()
+
 # SPC7110: Hudson's graphics decompressor and memory mapper, plus an RTC-4513
 # on ROMType $F9. Tengai Makyou Zero, Momotarou Dentetsu Happy, Super Power
 # League 4. The decompressor is byuu and neviksti's reverse-engineered one, by

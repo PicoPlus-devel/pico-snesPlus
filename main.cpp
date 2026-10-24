@@ -718,7 +718,12 @@ static void paceFrame(bool init, bool groupEnd = true)
  * Host tick — must run once per frame. Pumps the TinyUSB host stack
  * (otherwise USB HID gamepad state never updates) and refreshes the
  * GPIO/Wii pad latches that the framework's getCurrentGamePadState()
- * reads. Mirrors the pump done in pico-infonesPlus's InfoNES_LoadFrame. */
+ * reads. Mirrors the pump done in pico-infonesPlus's InfoNES_LoadFrame.
+ * The GPIO pad read is only started here. S9xReadJoypad (port_glue.cpp)
+ * finishes it at the game's own joypad read, long after the PIO is done, so
+ * core0 never waits for it (~220 us, ~390 us with the 32-bit SNES Mouse
+ * read). Same sample time, so the same input latency; wantsMenu() and the
+ * mouse hot-plug below see the previous frame's result. */
 static void host_tick(void)
 {
 #if NES_PIN_CLK != -1
@@ -733,26 +738,31 @@ static void host_tick(void)
     auto onOff = hw_divider_s32_quotient_inlined(count, 60) & 1;
     Frens::blinkLed(onOff);
     Frens::pollHeadPhoneJack();
-#if NES_PIN_CLK != -1
-    nespad_read_finish();
-#endif
     tuh_task();
-    /* SNES Mouse auto hot-plug: with a USB mouse present the core's mouse
-     * path takes over SNES port 1 — the port Mario Paint requires — like
-     * plugging the real peripheral in, so pad 1 is suspended until the
-     * mouse is unplugged (pad 2 and the SELECT+START menu combo keep
-     * working). MouseMaster tracks the live connection so without a mouse
-     * the core executes the exact same instruction path as before this
-     * feature. */
+    /* SNES Mouse auto hot-plug: with a USB mouse present, or an original
+     * SNES Mouse in GPIO controller port 1, the core's mouse path takes over
+     * SNES port 1 — the port Mario Paint requires — like plugging the real
+     * peripheral in, so pad 1 is suspended until the mouse is unplugged
+     * (pad 2 and the SELECT+START menu combo keep working). A SNES Mouse in
+     * GPIO port 2 is left alone, as on the console. MouseMaster tracks the
+     * live connection so without a mouse the core executes the exact same
+     * instruction path as before this feature. */
     {
         io::MouseState &m = io::getCurrentMouseState();
-        Settings.MouseMaster = m.connected;
-        if (m.connected && IPPU.Controller == SNES_JOYPAD)
+        bool mouse = m.connected;
+#if NES_PIN_CLK != -1 && NESPAD_SNES_MOUSE
+        mouse |= nespad_padtype[0] == NESPAD_TYPE_MOUSE;
+#endif
+        Settings.MouseMaster = mouse;
+        if (mouse && IPPU.Controller == SNES_JOYPAD)
         {
             m.dx = m.dy = m.wheel = 0; /* drop deltas piled up while inactive */
+#if NES_PIN_CLK != -1 && NESPAD_SNES_MOUSE
+            nespad_mouse[0].dx = nespad_mouse[0].dy = 0;
+#endif
             IPPU.Controller = SNES_MOUSE;
         }
-        else if (!m.connected && IPPU.Controller == SNES_MOUSE)
+        else if (!mouse && IPPU.Controller == SNES_MOUSE)
             IPPU.Controller = SNES_JOYPAD;
     }
 #if WII_PIN_SDA >= 0 && WII_PIN_SCL >= 0
