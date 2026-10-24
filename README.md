@@ -173,8 +173,8 @@ The other designs in the PCB README cannot be used with this emulator. The PicoN
 
 Controllers on the two GPIO controller ports:
 
-- **v2.8:** original SNES controllers plug in directly.
-- **v2.6:** an NES controller works, with A→B and B→Y. The ports speak the SNES protocol and clock all 16 bits, so a SNES pad maps 1:1, but it needs a [SNES-to-NES adapter cable you make yourself](snestonescontroller.md), one per port. Ready-made cables exist but are hard to find, and some do not work as expected.
+- **v2.8:** original SNES controllers plug in directly. An original [SNES Mouse](#snes-mouse) can be used in controller port 1, for Mario Paint and other mouse games.
+- **v2.6:** an NES controller works, with A→B and B→Y. The ports speak the SNES protocol and clock all 16 bits, so a SNES pad maps 1:1, but it needs a [SNES-to-NES adapter cable you make yourself](snestonescontroller.md), one per port. Ready-made cables exist but are hard to find, and some do not work as expected. An original [SNES Mouse](#snes-mouse) works in controller port 1 through the same adapter cable.
 
 Two controllers give a two-player setup. A USB controller for player 1 and a controller in either GPIO port for player 2 works as well. Audio is carried over HDMI.
 
@@ -260,7 +260,7 @@ See the [pico-infonesPlus README](https://github.com/PicoPlus-devel/pico-infones
 The emulator supports the [SNES Mouse](https://en.wikipedia.org/wiki/Super_NES_Mouse), used by Mario Paint and other mouse games. Two kinds of mouse can be used, and no setting needs to be changed for either:
 
 - **A USB mouse**, connected to the USB port.
-- **An original SNES Mouse**, connected to GPIO controller port 1. The [PicoNES v2.8 PCB](#picones-pcb) has SNES controller ports, so the mouse plugs in directly. The mouse uses only the power, clock, latch and data pins, which controller port 1 provides. A mouse in controller port 2 is not used.
+- **An original SNES Mouse**, connected to GPIO controller port 1. On a board with SNES controller ports, such as the [PicoNES v2.8 PCB](#picones-pcb), the mouse plugs in directly. On a board with NES controller ports, such as the PicoNES v2.6, it connects through the [SNES-to-NES adapter cable](snestonescontroller.md). The mouse uses only the power, clock, latch and data lines, which every GPIO controller port and the adapter cable carry. A mouse in controller port 2 is not used.
 
 Both can be connected at the same time. Their movements are added together, and the buttons of either mouse work. Games without mouse support ignore the mouse.
 

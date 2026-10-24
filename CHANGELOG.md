@@ -20,7 +20,7 @@
 
 ## What's new
 
-- **Original SNES Mouse.** An original Nintendo SNES Mouse can now be used in controller port 1 of the PicoNES v2.8 PCB, for Mario Paint and other mouse games. It is detected automatically, and it can be used together with a USB mouse. See [SNES Mouse](https://github.com/PicoPlus-devel/pico-snesPlus#snes-mouse) in the README.
+- **Original SNES Mouse.** An original Nintendo SNES Mouse can now be used in GPIO controller port 1, for Mario Paint and other mouse games: directly on the PicoNES v2.8 PCB, or through a SNES-to-NES adapter cable on a board with NES controller ports. It is detected automatically, and it can be used together with a USB mouse. See [SNES Mouse](https://github.com/PicoPlus-devel/pico-snesPlus#snes-mouse) in the README.
 - **Mouse test ROM.** `mousetest.sfc` in [tools/mousetest](https://github.com/PicoPlus-devel/pico-snesPlus/tree/main/tools/mousetest) shows the cursor position, the movement and the buttons of a connected mouse.
 - The controller test screen in the settings menu recognises the SNES Mouse.
 
