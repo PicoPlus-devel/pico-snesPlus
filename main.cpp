@@ -110,7 +110,7 @@ extern "C" void     s9x_port_tear_stats(uint32_t *frames, uint32_t *torn, uint32
 extern uint16_t *g_snes_private_screen;
 #endif
 
-#define EMULATOR_CLOCKFREQ_KHZ 378000      /* RP2350 default clock for this emulator */
+#define EMULATOR_CLOCKFREQ_KHZ 384000      /* RP2350 default clock for this emulator: 8 x 48 MHz, so USB runs from PLL_SYS and PLL_USB is the 126 MHz HSTX clock (pico_shared setClocksAndStartStdio) */
 #define EMULATOR_MAX_CLOCKFREQ_KHZ 504000  /* RP2350 max overclock — 504 MHz (experiment, may be unstable) */
 #define AUDIOBUFFERSIZE 1024
 /* 44100, matching everything downstream: the TLV320 DAC's register
@@ -141,7 +141,7 @@ static uint32_t g_fps = 60;
 
 /* -------------------------------------------------------------------------
  * Hardfault reporter — overrides the SDK's weak isr_hardfault (a bare
- * breakpoint) on BOTH cores. At 378 MHz this board lives near its silicon
+ * breakpoint) on BOTH cores. At 384 MHz this board lives near its silicon
  * margin, so when a fault fires we want the stacked frame and fault status
  * on serial without needing a debug probe attached. RAM-resident so it
  * still runs if XIP is unavailable (printf itself is flash-resident; if
@@ -230,7 +230,6 @@ int8_t g_settings_visibility_snes[MOPT_COUNT] = {
     [MOPT_MENU_OVERSCAN]            = 0,                  /* Overscan in menu (menu.cpp force-shows this below the menu colors) */
     [MOPT_GENESIS_PAD]              = 0,                  /* Genesis only */
     [MOPT_NES_PALETTE]              = 0,                  /* NES only */
-    [MOPT_HSTX_CLOCK_FIX]           = HSTX && !CFG_TUH_RPI_PIO_USB, /* Video Clock Fix (PIO-USB builds always have it, see SNES_OVERCLOCK_FIX) */
 };
 
 static const uint8_t g_available_screen_modes_snes[] = {
@@ -1739,7 +1738,7 @@ int main()
     // For 504 Mhz, 1.7V seems the minimum stable voltage.  Should run fine at 1.6 or 1.65 Volt, but
     // may cause hardfaults on heavy scenes. 1.7V is the safe limit for 504 Mhz. 
     // BUT CAN CAUSE DAMAGE !!!!!!
-    //1.6V is the safe limit for 378 Mhz.
+    // 384 Mhz runs at 1.50 V, the pair pico_shared's FlashParams use. 1.6V was the safe limit found at 378 Mhz.
     vreg_voltage voltage = vreg_voltage::VREG_VOLTAGE_1_50;
 #if HW_CONFIG == 2 || HW_CONFIG == 8
     Frens::setOverclockLimits(EMULATOR_CLOCKFREQ_KHZ,  EMULATOR_MAX_CLOCKFREQ_KHZ, 

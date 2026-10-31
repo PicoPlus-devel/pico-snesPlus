@@ -335,7 +335,6 @@ target_compile_definitions(${projectname} PRIVATE
     PICO_AUDIO_I2S_INTERRUPT_IS_BUTTON=${PICO_AUDIO_I2S_INTERRUPT_IS_BUTTON}
     CFG_TUH_RPI_PIO_USB=${ENABLE_PIO_USB}
     PIO_USB_USE_PIO=${PIO_USB_USE_PIO}
-    SNES_OVERCLOCK_FIX=1  # PIO-USB builds: HSTX from PLL_USB, no TMDS jitter at 378 MHz
     PSRAM_CS_PIN=${PSRAM_CS_PIN}
     GPIOHSTXD0=${GPIOHSTXD0}
     GPIOHSTXD1=${GPIOHSTXD1}
@@ -345,7 +344,6 @@ target_compile_definitions(${projectname} PRIVATE
     ENABLE_VU_METER=${ENABLE_VU_METER}
     WIIPAD_DELAYED_START=${WIIPAD_DELAYED_START}
     ENABLEDVI=1
-    GENESIS_OVERCLOCK_HSTX_FIX=1
     DOUBLEFRAMEBUFFER=0
     # MantaPad (081f:e401) is sold as both a NES- and a SNES-shaped pad with
     # the same VID/PID. Default it to SNES mode here so all buttons work at

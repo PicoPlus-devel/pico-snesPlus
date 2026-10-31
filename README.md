@@ -91,38 +91,26 @@ The Super FX chip is emulated correctly, but **whether a game is playable depend
 - **Star Fox renders correctly but is too slow to play**, landing around 30 fps rather than 60. It draws its entire 3D world through the chip, and the GSU accounts for roughly a third of all emulation time.
 - Other Super FX games are not tested.
 
-The bottleneck is PSRAM bandwidth, not the CPU clock, so the optional overclock described below does not help these games — Star Fox runs at the same speed at 504 MHz as it did at 378 MHz. Other Super FX titles fall somewhere between these two cases; try them and see.
+The bottleneck is PSRAM bandwidth, not the CPU clock, so the optional overclock described below does not help these games — Star Fox runs at the same speed at 504 MHz as at the default clock. Other Super FX titles fall somewhere between these two cases; try them and see.
 
 ***
 
 ## Overclocking
 
-By default the RP2350 is overclocked to 378 MHz for this emulator. This clock gives stable performance across the tested games, and is the setting the emulator is developed and tested with.
+By default the RP2350 is overclocked to 384 MHz for this emulator. This clock gives stable performance across the tested games, and is the setting the emulator is developed and tested with.
 
 On HW_CONFIG 2 (Pimoroni Pico Plus 2 breadboard or PicoNES PCB) and HW_CONFIG 8 (Adafruit Fruit Jam), the settings menu has an optional overclock that raises the clock to 504 MHz; it is not offered on the Murmulator M2 (13), the Feather RP2350 (14) or the Olimex RP2040-PICO-PC (15).
 
 > [!WARNING]
 > **The 504 MHz option is not advised. Leave it off.**
 >
-> - **It gains very little.** The bottleneck is PSRAM bandwidth, not the CPU clock. Most games run at essentially the same speed at 504 MHz as at 378 MHz, Star Fox included.
+> - **It gains very little.** The bottleneck is PSRAM bandwidth, not the CPU clock. Most games run at essentially the same speed at 504 MHz as at 384 MHz, Star Fox included.
 > - **It raises the core voltage and makes the chip run considerably hotter.** Sustained operation at that clock and voltage can overheat, destabilise or permanently damage the RP2350 and the board it is on, and shorten its lifetime.
 > - **It causes instability and crashes**, which is why it is off by default.
 >
 > The option exists for experimenting only. If you enable it, you do so entirely at your own risk.
 
 Use this software at your own risk. I am not responsible in any way for damage to your board and/or connected peripherals caused by using this software, by enabling the overclock option, or by incorrect wiring or voltages.
-
-### Video Clock Fix
-
-At 378 MHz and higher the HDMI output clock is derived from the CPU clock, and some TVs and monitors then show small dots or short dotted lines in the picture. Taking the HDMI clock from the clock source of the built-in USB port avoids this, but leaves that port without a usable clock.
-
-- On HW_CONFIG 8 (Adafruit Fruit Jam) and HW_CONFIG 14 (Feather RP2350) this is always done. USB controllers are connected to the second USB port on these boards, so nothing is lost.
-- On HW_CONFIG 2 (Pimoroni Pico Plus 2 breadboard or PicoNES PCB), HW_CONFIG 13 (Murmulator M2) and HW_CONFIG 15 (Olimex RP2040-PICO-PC, where it is the USB-A port) the built-in USB port is the only USB port, so this is a setting: **Video Clock Fix**, in the settings menu of the ROM browser, below Overclock where that is offered. It is off by default.
-
-> [!IMPORTANT]
-> With Video Clock Fix enabled, the built-in USB port can no longer be used for a gamepad, keyboard or mouse. Use a NES, SNES or Wii Classic controller on the GPIO controller ports instead; on the Olimex RP2040-PICO-PC, a NES or SNES controller on the UEXT connector. The port still powers the board, and USB drive mode remains available.
-
-The setting can only be enabled while a NES, SNES or Wii Classic controller is detected; otherwise an error message is shown. A SNES controller cannot be detected until a button on it has been pressed. Enabling the setting shows a warning first; confirming it restarts the board. To disable it, set it to OFF in the settings menu. If no working controller is available, delete `settings_SNES.dat` from the root of the SD card on a computer: on the next start the board disables the fix and restarts once.
 
 ***
 

@@ -172,7 +172,7 @@ bool snes_romflash_holds(const char *path, size_t size)
  *
  * On RP2350 flash_range_erase/_program end in the bootrom's
  * flash_enter_cmd_xip(), which resets qmi_hw->m[0] to its default: a plain 03h
- * serial read at CLKDIV=4, RXDELAY=0. At 378 MHz sysclk that is ~94.5 MHz with
+ * serial read at CLKDIV=4, RXDELAY=0. At 384 MHz sysclk that is 96 MHz with
  * no read delay -- far outside what a 03h read tolerates -- so the very next
  * instruction fetched from flash is garbage. The SDK saves and restores only
  * QMI CS1 (the PSRAM); nothing puts M0 back. This is the same hazard

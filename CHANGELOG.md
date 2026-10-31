@@ -1,6 +1,6 @@
 # CHANGELOG
 
-**v0.9.1** finds USB controllers at every start on the Adafruit Fruit Jam and other boards with PIO-USB.
+**v0.10** removes the small dots or lines some TVs and monitors showed in the picture, while the built-in USB port keeps working, and finds USB controllers at every start on the Adafruit Fruit Jam and other boards with PIO-USB.
 
 # General Info
 
@@ -14,13 +14,19 @@
 > [!WARNING]
 > **The optional 504 MHz overclock in the settings menu is not advised. Leave it off.**
 >
-> It gains very little — the bottleneck is PSRAM bandwidth, not the CPU clock, so most games run at essentially the same speed as at the default 378 MHz. It raises the core voltage, makes the chip run considerably hotter, and can overheat, destabilise or permanently damage the RP2350 and the board it is on. It is off by default and exists for experimenting only. Enabling it is entirely at your own risk; the author accepts no responsibility for any damage.
+> It gains very little — the bottleneck is PSRAM bandwidth, not the CPU clock, so most games run at essentially the same speed as at the default 384 MHz. It raises the core voltage, makes the chip run considerably hotter, and can overheat, destabilise or permanently damage the RP2350 and the board it is on. It is off by default and exists for experimenting only. Enabling it is entirely at your own risk; the author accepts no responsibility for any damage.
 
-# v0.9.1
+# v0.10
 
 ## Fixes
 
+- **No more dots or lines in the picture.** On boards with HSTX video, some TVs and monitors showed small dots or short dotted lines, for example on dark screens. The picture is now clean on every board, also with the 504 MHz overclock, and the built-in USB port can still be used for controllers and USB drive mode. Thanks to @szuping for the hint that led to this fix.
 - **USB controllers on the Adafruit Fruit Jam and other boards with PIO-USB are now found at every start.** On boards with an older RP2350 chip they were often not detected.
+
+## Other changes
+
+- **The Video Clock Fix setting has been removed.** It is no longer needed, see above. On a board where it was turned on, a USB controller on the built-in USB port works again.
+- **The RP2350 now runs at 384 MHz instead of 378 MHz.** See [Overclocking](https://github.com/PicoPlus-devel/pico-snesPlus#overclocking) in the README.
 
 # v0.9
 
@@ -90,7 +96,7 @@ These two games use Nintendo's S-DD1 chip, which unpacks their graphics while th
 - **SA-1 games skip more frames.** With frame skipping on, games such as Super Mario RPG and Kirby Super Star now draw one frame in three, as Super FX games do, instead of every other frame.
 - **The frame rate display shows two more values:** `R`, how often the picture has had to resynchronise with the display since start-up, and `F`, how many frames are skipped after each one drawn.
 - **All settings return to their defaults once** after updating to this version.
-- **New setting: Video Clock Fix** (Pimoroni Pico Plus 2, PicoNES PCB and Murmulator M2). Turn it on if your TV or monitor shows small dots or lines in the picture. A USB controller can then no longer be used; use a NES, SNES or Wii controller instead. See [Video Clock Fix](https://github.com/PicoPlus-devel/pico-snesPlus#video-clock-fix) in the README.
+- ~~**New setting: Video Clock Fix** (Pimoroni Pico Plus 2, PicoNES PCB and Murmulator M2). Turn it on if your TV or monitor shows small dots or lines in the picture. A USB controller can then no longer be used; use a NES, SNES or Wii controller instead.~~ Removed in v0.10.
 
 # v0.6
 
