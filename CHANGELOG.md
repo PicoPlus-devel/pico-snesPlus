@@ -27,6 +27,7 @@
 
 - **The Video Clock Fix setting has been removed.** It is no longer needed, see above. On a board where it was turned on, a USB controller on the built-in USB port works again.
 - **The RP2350 now runs at 384 MHz instead of 378 MHz.** See [Overclocking](https://github.com/PicoPlus-devel/pico-snesPlus#overclocking) in the README.
+- **USB keyboard in the menus.** Enter selects and Esc goes back.
 
 # v0.9
 
