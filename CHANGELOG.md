@@ -1,6 +1,6 @@
 # CHANGELOG
 
-**v0.10** removes the small dots or lines some TVs and monitors showed in the picture, while the built-in USB port keeps working, and finds USB controllers at every start on the Adafruit Fruit Jam and other boards with PIO-USB.
+**v0.10.1** fixes picture drop-outs and flickering lines in DVI mode on boards with HSTX video.
 
 # General Info
 
@@ -15,6 +15,19 @@
 > **The optional 504 MHz overclock in the settings menu is not advised. Leave it off.**
 >
 > It gains very little — the bottleneck is PSRAM bandwidth, not the CPU clock, so most games run at essentially the same speed as at the default 384 MHz. It raises the core voltage, makes the chip run considerably hotter, and can overheat, destabilise or permanently damage the RP2350 and the board it is on. It is off by default and exists for experimenting only. Enabling it is entirely at your own risk; the author accepts no responsibility for any damage.
+
+# v0.10.1
+
+## Fixes
+
+- **The picture no longer drops out in DVI mode.** On boards with HSTX video, with *Display Mode* set to DVI, the picture could randomly drop out.
+- **No more flickering lines in DVI mode.** On boards with HSTX video, with *Display Mode* set to DVI, now and then a single line was shown shifted to the right for one frame.
+- **An original SNES Mouse no longer keeps moving after it has stopped.**
+
+## Other changes
+
+- **NES and SNES controllers on the controller ports are now read with the same timing as a real console**, on all boards. Thanks to @javavi.
+- Under pico-bootLoader, the settings menu entry that goes back to the bootloader is now called **Return to boot loader**.
 
 # v0.10
 
