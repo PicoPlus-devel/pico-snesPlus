@@ -9,15 +9,17 @@ It is a sister project of these emulators, with which it shares its menu, displa
 - Game Boy / Game Boy Color: [pico-peanutGB](https://github.com/PicoPlus-devel/pico-peanutGB)
 - Sega Mega Drive / Genesis: [pico-genesisPlus](https://github.com/PicoPlus-devel/pico-genesisPlus)
 
-It runs on five hardware configurations, each with its own ready-made binary — see [Supported hardware](#supported-hardware) for the download links:
+It runs on seven hardware configurations, each with its own ready-made binary — see [Supported hardware](#supported-hardware) for the download links:
 
 - [Adafruit Fruit Jam](https://www.adafruit.com/product/6200) — the primary development and test board
 - [Pimoroni Pico Plus 2](https://shop.pimoroni.com/products/pimoroni-pico-plus-2?variant=42092668289107) with an [Adafruit DVI breakout](https://www.adafruit.com/product/4984) and a microSD breakout, on a breadboard or on the [PicoNES PCB](#picones-pcb) (v2.6 with NES or v2.8 with SNES controller ports)
 - [Murmulator M2](https://murmulator.ru)
 - [Adafruit Feather RP2350 with HSTX Port](https://www.adafruit.com/product/6130) with a TLV320DAC3100 I2S DAC and a microSD breakout
 - [Olimex RP2040-PICO-PC](https://www.olimex.com/Products/MicroPython/PICO/RP2040-PICO-PC/) with a Raspberry Pi Pico 2 compatible board that has 8 MB of PSRAM
+- [Pico Computer 3](https://github.com/UKTailwind/Pico-Computer-3)
+- [PCB for the Waveshare RP2350-PiZero](https://github.com/PicoPlus-devel/pico-infonesPlus#pcb-with-waveshare-rp2350-pizero), designed by Liu Szuping, with an 8 MB PSRAM chip soldered onto the RP2350-PiZero
 
-All five are RP2350 boards with 8 MB of PSRAM, which this emulator requires: a plain Raspberry Pi Pico 2 has none and cannot be used, and configurations without PSRAM known from the sister projects will not build.
+All seven are RP2350 boards with 8 MB of PSRAM, which this emulator requires: a plain Raspberry Pi Pico 2 has none and cannot be used, and configurations without PSRAM known from the sister projects will not build.
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes and per-board download links.
 
@@ -99,7 +101,7 @@ The bottleneck is PSRAM bandwidth, not the CPU clock, so the optional overclock 
 
 By default the RP2350 is overclocked to 384 MHz for this emulator. This clock gives stable performance across the tested games, and is the setting the emulator is developed and tested with.
 
-On HW_CONFIG 2 (Pimoroni Pico Plus 2 breadboard or PicoNES PCB) and HW_CONFIG 8 (Adafruit Fruit Jam), the settings menu has an optional overclock that raises the clock to 504 MHz; it is not offered on the Murmulator M2 (13), the Feather RP2350 (14) or the Olimex RP2040-PICO-PC (15).
+On HW_CONFIG 2 (Pimoroni Pico Plus 2 breadboard or PicoNES PCB) and HW_CONFIG 8 (Adafruit Fruit Jam), the settings menu has an optional overclock that raises the clock to 504 MHz; it is not offered on the Murmulator M2 (13), the Feather RP2350 (14), the Olimex RP2040-PICO-PC (15), the Pico Computer 3 (17) or the PCB for the Waveshare RP2350-PiZero (18).
 
 > [!WARNING]
 > **The 504 MHz option is not advised. Leave it off.**
@@ -116,7 +118,7 @@ Use this software at your own risk. I am not responsible in any way for damage t
 
 ## Supported hardware
 
-An RP2350 board with 8 MB of PSRAM is required. Only the five hardware configurations below are supported; other configurations known from the sister projects will not build, because the build refuses configurations without RP2350 and PSRAM.
+An RP2350 board with 8 MB of PSRAM is required. Only the seven hardware configurations below are supported; other configurations known from the sister projects will not build, because the build refuses configurations without RP2350 and PSRAM.
 
 | HW_CONFIG | Hardware | Binary |
 | --- | --- | --- |
@@ -125,6 +127,8 @@ An RP2350 board with 8 MB of PSRAM is required. Only the five hardware configura
 | 13 | [Murmulator M2](https://murmulator.ru) | [picosnesPlus_MurmulatorM2_arm.uf2](https://github.com/PicoPlus-devel/pico-snesPlus/releases/latest/download/picosnesPlus_MurmulatorM2_arm.uf2) |
 | 14 | [Adafruit Feather RP2350 with HSTX Port](https://www.adafruit.com/product/6130) with TLV320DAC3100 I2S DAC and microSD breakout | [picosnesPlus_AdafruitFeatherRP2350_TLV320DAC3100_arm_piousb.uf2](https://github.com/PicoPlus-devel/pico-snesPlus/releases/latest/download/picosnesPlus_AdafruitFeatherRP2350_TLV320DAC3100_arm_piousb.uf2) |
 | 15 | [Olimex RP2040-PICO-PC](https://www.olimex.com/Products/MicroPython/PICO/RP2040-PICO-PC/) with a Raspberry Pi Pico 2 compatible board that has 8 MB of PSRAM | [picosnesPlus_OlimexPicoPC_arm.uf2](https://github.com/PicoPlus-devel/pico-snesPlus/releases/latest/download/picosnesPlus_OlimexPicoPC_arm.uf2) |
+| 17 | [Pico Computer 3](https://github.com/UKTailwind/Pico-Computer-3) | [picosnesPlus_PicoComputer3_arm.uf2](https://github.com/PicoPlus-devel/pico-snesPlus/releases/latest/download/picosnesPlus_PicoComputer3_arm.uf2) |
+| 18 | [PCB for the Waveshare RP2350-PiZero](https://github.com/PicoPlus-devel/pico-infonesPlus#pcb-with-waveshare-rp2350-pizero) with an 8 MB PSRAM chip soldered onto the RP2350-PiZero | [picosnesPlus_WaveShareRP2350PiZeroLiuPCB_arm_piousb.uf2](https://github.com/PicoPlus-devel/pico-snesPlus/releases/latest/download/picosnesPlus_WaveShareRP2350PiZeroLiuPCB_arm_piousb.uf2) |
 
 Notes per configuration:
 
@@ -132,6 +136,8 @@ Notes per configuration:
 - **HW_CONFIG 8**: no additional hardware is required apart from a game controller. Audio is output through the monitor and the built-in speaker or headphone jack.
 - **HW_CONFIG 14**: the Feather RP2350 is sold in two variants: [with 8 MB PSRAM onboard](https://www.adafruit.com/product/6130) and [without PSRAM](https://www.adafruit.com/product/6000). On the variant without PSRAM, a PSRAM chip must be soldered onto the board separately.
 - **HW_CONFIG 15**: a standard Raspberry Pi Pico 2 does not work — it has no PSRAM. The board fitted must have 8 MB of PSRAM with its chip select on GPIO 8. Audio is output through HDMI and the board's audio jack at the same time. A NES or SNES controller can be connected to the UEXT connector: clock on GPIO 5, latch on GPIO 9 and data on GPIO 20. There is no Wii Classic controller support and no Pico 2 W binary. Support for this board was contributed by [DnCraptor](https://github.com/DnCraptor).
+- **HW_CONFIG 17**: the Pico Computer 3 has 8 MB of PSRAM on the board. Audio is output through HDMI, or through the audio jack with *External Audio* in the settings menu. Up to two NES or SNES controllers and a Wii Classic controller connect to its I/O header H4; the pins are listed under [Pico Computer 3](https://github.com/PicoPlus-devel/pico-infonesPlus#pico-computer-3) in the pico-infonesPlus readme. The pin assignment may still change. Support for this board was contributed by [javavi](https://github.com/javavi).
+- **HW_CONFIG 18**: a PCB for the [Waveshare RP2350-PiZero](https://www.waveshare.com/rp2350-pizero.htm), designed by Liu Szuping ([szuping](https://github.com/szuping)); the PCB design is not yet available. The RP2350-PiZero comes without PSRAM, so an 8 MB PSRAM chip must be soldered onto it. If its flash chip is not a Winbond chip, apply the [flash_config fix](https://github.com/PicoPlus-devel/pico-infonesPlus#psram-with-a-non-winbond-flash-chip) before flashing the emulator. Video goes through the HDMI port of the PCB, not the mini HDMI port of the RP2350-PiZero. Audio is output through HDMI, or through the audio jack with *External Audio* in the settings menu. A USB controller connects to the PIO-USB port of the RP2350-PiZero, and up to two NES or SNES controllers to the controller ports of the PCB. With an ESP32 module running [BlueRetro](https://github.com/darthcloud/blueretro) in the socket of the PCB, Bluetooth controllers are used instead of the controller ports; remove the module to use the ports. See [PCB with Waveshare RP2350-PiZero](https://github.com/PicoPlus-devel/pico-infonesPlus#pcb-with-waveshare-rp2350-pizero) in the pico-infonesPlus readme.
 
 For wiring and assembly instructions, see the setup sections of the [pico-infonesPlus README](https://github.com/PicoPlus-devel/pico-infonesPlus#setup); for the PCB version of HW_CONFIG 2, see [PicoNES PCB](#picones-pcb) below. Flashing works the same for every board: hold BOOTSEL while connecting the board over USB, then copy the `.uf2` file onto the USB drive that appears.
 
@@ -349,6 +355,8 @@ git submodule update --init --recursive
 ./bld.sh -c13      # HW_CONFIG 13: Murmulator M2
 ./bld.sh -c14      # HW_CONFIG 14: Adafruit Feather RP2350
 ./bld.sh -c15      # HW_CONFIG 15: Olimex RP2040-PICO-PC
+./bld.sh -c17      # HW_CONFIG 17: Pico Computer 3
+./bld.sh -c18      # HW_CONFIG 18: PCB for the Waveshare RP2350-PiZero
 ```
 
 Run `./bld.sh -h` for all options. The resulting `.uf2` file is placed in the `releases/` folder; flash it by holding BOOTSEL while connecting the board and copying the file onto the USB drive that appears.
@@ -410,6 +418,8 @@ The bundled snes9x core also compiles natively on Linux. [tools/host-harness](to
 - Metadata, M2 testing and the 3D-printed case for the PicoNES PCB by [DynaMight1124](https://github.com/DynaMight1124)
 - The [PicoNES PCB](#picones-pcb) was designed by **John Edgar Park** ([@johnedgarpark](https://twitter.com/johnedgarpark)).
 - Olimex RP2040-PICO-PC support, including sound through its audio jack, by [DnCraptor](https://github.com/DnCraptor).
+- Pico Computer 3 support by [javavi](https://github.com/javavi).
+- PCB design for the Waveshare RP2350-PiZero by Liu Szuping ([szuping](https://github.com/szuping)).
 
 ## Use of AI
 

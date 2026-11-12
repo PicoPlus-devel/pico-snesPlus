@@ -37,7 +37,7 @@ if(NOT PICO_BOARD)
     set(PICO_BOARD pico2 CACHE STRING "Board type")
 endif()
 if(PICO_PLATFORM STREQUAL "rp2040")
-    message(FATAL_ERROR "pico-snesPlus requires RP2350 with PSRAM. Pick a HW_CONFIG that selects an RP2350 board (2, 8, 13, 14, 15).")
+    message(FATAL_ERROR "pico-snesPlus requires RP2350 with PSRAM. Pick a HW_CONFIG that selects an RP2350 board (2, 8, 13, 14, 15, 17, 18).")
 endif()
 if(NOT PSRAM_CS_PIN OR PSRAM_CS_PIN EQUAL 0)
     message(FATAL_ERROR "pico-snesPlus requires PSRAM. Selected board has no PSRAM_CS_PIN.")
@@ -483,7 +483,6 @@ endif()
 if(DEFINED PICO_DEFAULT_UART_TX_PIN)
     target_compile_definitions(${projectname} PRIVATE
         PICO_DEFAULT_UART_TX_PIN=${PICO_DEFAULT_UART_TX_PIN}
-        PICO_DEFAULT_UART=0
     )
 endif()
 if(DEFINED PICO_DEFAULT_UART_RX_PIN)

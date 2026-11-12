@@ -1,6 +1,6 @@
 # CHANGELOG
 
-**v0.10.1** fixes picture drop-outs and flickering lines in DVI mode on boards with HSTX video.
+**v0.11** adds support for the Pico Computer 3 and a PCB for the Waveshare RP2350-PiZero, and fixes picture drop-outs and flickering lines in DVI mode on boards with HSTX video.
 
 # General Info
 
@@ -16,7 +16,12 @@
 >
 > It gains very little — the bottleneck is PSRAM bandwidth, not the CPU clock, so most games run at essentially the same speed as at the default 384 MHz. It raises the core voltage, makes the chip run considerably hotter, and can overheat, destabilise or permanently damage the RP2350 and the board it is on. It is off by default and exists for experimenting only. Enabling it is entirely at your own risk; the author accepts no responsibility for any damage.
 
-# v0.10.1
+# v0.11
+
+## What's new
+
+- **Pico Computer 3.** The emulator now runs on the [Pico Computer 3](https://github.com/UKTailwind/Pico-Computer-3): HDMI, sound through HDMI or the audio jack, USB controllers, 8 MB of PSRAM, and NES or SNES controllers and a Wii Classic controller on the I/O header. The pin assignment may still change. See [Supported hardware](https://github.com/PicoPlus-devel/pico-snesPlus#supported-hardware). Thanks to @javavi.
+- **PCB for the Waveshare RP2350-PiZero.** The emulator now runs on a PCB for the Waveshare RP2350-PiZero, designed by @szuping: HDMI, sound through HDMI or the audio jack, a USB controller on the PIO-USB port, NES and SNES controller ports, and a socket for an ESP32 module that connects Bluetooth controllers through [BlueRetro](https://github.com/darthcloud/blueretro). An 8 MB PSRAM chip must be soldered onto the RP2350-PiZero. The PCB design is not yet available. See [Supported hardware](https://github.com/PicoPlus-devel/pico-snesPlus#supported-hardware).
 
 ## Fixes
 
@@ -328,7 +333,7 @@ The port of the Snes9x core to the RP2350, the coprocessor work (Super FX, DSP, 
 <a name="downloads___"></a>
 ## Downloads by configuration
 
-Only the five RP2350 + PSRAM configurations below are supported. For board-by-board wiring and which UF2 file to flash, see the [Supported hardware section in the README](https://github.com/PicoPlus-devel/pico-snesPlus#supported-hardware).
+Only the seven RP2350 + PSRAM configurations below are supported. For board-by-board wiring and which UF2 file to flash, see the [Supported hardware section in the README](https://github.com/PicoPlus-devel/pico-snesPlus#supported-hardware).
 
 | HW_CONFIG | Board | Binary |
 |:--|:--|:--|
@@ -337,6 +342,8 @@ Only the five RP2350 + PSRAM configurations below are supported. For board-by-bo
 | 13 | Murmulator M2 | [picosnesPlus_MurmulatorM2_arm.uf2](https://github.com/PicoPlus-devel/pico-snesPlus/releases/latest/download/picosnesPlus_MurmulatorM2_arm.uf2)  |
 | 14 | Adafruit Feather RP2350 with TLV320DAC3100 | [picosnesPlus_AdafruitFeatherRP2350_TLV320DAC3100_arm_piousb.uf2](https://github.com/PicoPlus-devel/pico-snesPlus/releases/latest/download/picosnesPlus_AdafruitFeatherRP2350_TLV320DAC3100_arm_piousb.uf2) |
 | 15 | Olimex RP2040-PICO-PC with a Pico 2 compatible board that has 8 MB of PSRAM | [picosnesPlus_OlimexPicoPC_arm.uf2](https://github.com/PicoPlus-devel/pico-snesPlus/releases/latest/download/picosnesPlus_OlimexPicoPC_arm.uf2) |
+| 17 | Pico Computer 3 | [picosnesPlus_PicoComputer3_arm.uf2](https://github.com/PicoPlus-devel/pico-snesPlus/releases/latest/download/picosnesPlus_PicoComputer3_arm.uf2) |
+| 18 | PCB for the Waveshare RP2350-PiZero, with an 8 MB PSRAM chip soldered onto the RP2350-PiZero | [picosnesPlus_WaveShareRP2350PiZeroLiuPCB_arm_piousb.uf2](https://github.com/PicoPlus-devel/pico-snesPlus/releases/latest/download/picosnesPlus_WaveShareRP2350PiZeroLiuPCB_arm_piousb.uf2) |
 
 ## Other downloads
 
