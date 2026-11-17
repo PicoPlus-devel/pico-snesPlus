@@ -16,6 +16,12 @@
 >
 > It gains very little — the bottleneck is PSRAM bandwidth, not the CPU clock, so most games run at essentially the same speed as at the default 384 MHz. It raises the core voltage, makes the chip run considerably hotter, and can overheat, destabilise or permanently damage the RP2350 and the board it is on. It is off by default and exists for experimenting only. Enabling it is entirely at your own risk; the author accepts no responsibility for any damage.
 
+# Next release
+
+## Other changes
+
+- Built with Pico SDK 2.3.1. This leaves a little more memory free, about 0.4 KB.
+
 # v0.11
 
 ## What's new
