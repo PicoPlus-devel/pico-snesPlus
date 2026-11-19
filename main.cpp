@@ -33,6 +33,9 @@
 #include "ff.h"
 
 #include "FrensHelpers.h"
+// pico-bootLoader attract mode may start this application with a random game from here,
+// on a board with PSRAM (bootloader builds only, see pico_shared/attract.h).
+FRENS_ATTRACT_DIRS_PSRAM("/roms/SNES");
 #include "FrensFonts.h"
 #include "romflash.h"
 #include "progress_bar.h"
